@@ -72,3 +72,8 @@ Every mutating op (`ops.rs`, `editor.rs`, `sync.rs`) is **preview → backup →
 - `ops.rs` — enable/disable, promote-to-shared, link/remove-link.
 - `editor.rs` — read / validate / write SKILL.md.
 - `sync.rs` — cross-tool projection + `openai.yaml` generation + unified diff.
+- `groups.rs` — custom categories persisted to `~/.skill-hub/groups.json` (skills keyed by
+  aggregate `name`). Purely organizational: assigning never touches a SKILL.md, so it sits
+  outside the preview→backup→apply discipline — the file is ours, tiny, and fully rewritten
+  on save (`read_groups`/`write_groups` commands; `save` normalizes/dedupes/prunes). The UI
+  also groups by existing dimensions (tool/scope) purely client-side in `App.tsx`.

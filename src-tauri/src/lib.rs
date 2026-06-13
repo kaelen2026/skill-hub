@@ -1,9 +1,11 @@
 mod editor;
+mod groups;
 mod ops;
 mod scanner;
 mod sync;
 
 use editor::{SkillFile, ValidationReport, WriteResult};
+use groups::GroupConfig;
 use ops::{OpPreview, OpRequest, OpResult};
 use scanner::ScanResult;
 use sync::{SyncPreview, SyncRequest, SyncResult};
@@ -57,6 +59,19 @@ fn apply_sync(req: SyncRequest) -> SyncResult {
     sync::apply(&req)
 }
 
+/// Read the user's custom category config (~/.skill-hub/groups.json).
+/// Missing or corrupt files yield defaults — grouping never blocks the app.
+#[tauri::command]
+fn read_groups() -> GroupConfig {
+    groups::load()
+}
+
+/// Persist the custom category config, normalizing it on the way to disk.
+#[tauri::command]
+fn write_groups(config: GroupConfig) -> Result<(), String> {
+    groups::save(&config).map_err(|e| e.to_string())
+}
+
 /// Reveal a file or directory in Finder (`open -R`).
 #[tauri::command]
 fn reveal_in_finder(path: String) -> Result<(), String> {
@@ -91,7 +106,9 @@ pub fn run() {
             validate_skill_md,
             write_skill_md,
             preview_sync,
-            apply_sync
+            apply_sync,
+            read_groups,
+            write_groups
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -10,6 +10,7 @@ import type {
   SyncRequest,
   SyncPreview,
   SyncResult,
+  GroupConfig,
 } from "./types";
 import {
   MOCK_SCAN,
@@ -17,6 +18,7 @@ import {
   MOCK_VALIDATION,
   MOCK_OP_PREVIEW,
   MOCK_SYNC_PREVIEW,
+  MOCK_GROUPS,
 } from "./mock";
 
 // True only inside the packaged Tauri app. In a plain browser (`vite dev` for
@@ -63,6 +65,23 @@ export function applySync(req: SyncRequest): Promise<SyncResult> {
   if (!TAURI)
     return Promise.resolve({ ok: true, backup_path: null, written: [], error: null });
   return invoke<SyncResult>("apply_sync", { req });
+}
+
+// In-browser (non-Tauri) the config can't hit disk, so we keep it in memory
+// across calls — enough for visual work in `vite dev`.
+let mockGroups: GroupConfig = MOCK_GROUPS;
+
+export function readGroups(): Promise<GroupConfig> {
+  if (!TAURI) return Promise.resolve(mockGroups);
+  return invoke<GroupConfig>("read_groups");
+}
+
+export function writeGroups(config: GroupConfig): Promise<void> {
+  if (!TAURI) {
+    mockGroups = config;
+    return Promise.resolve();
+  }
+  return invoke("write_groups", { config });
 }
 
 export function revealInFinder(path: string): Promise<void> {

@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import {
   Search,
   RotateCw,
@@ -14,6 +14,14 @@ import {
   ArrowUpFromLine,
   Link2Off,
   ArrowLeftRight,
+  PanelLeftClose,
+  PanelLeftOpen,
+  ChevronRight,
+  Tag,
+  Plus,
+  X,
+  Trash2,
+  Check,
 } from "lucide-react";
 import {
   scanSkills,
@@ -24,6 +32,8 @@ import {
   readSkillMd,
   previewSync,
   applySync,
+  readGroups,
+  writeGroups,
 } from "./api";
 import {
   SCOPE_LABELS,
@@ -33,8 +43,11 @@ import {
   type OpRequest,
   type OpPreview,
   type Tool,
+  type Scope,
   type SyncRequest,
   type SyncPreview,
+  type GroupConfig,
+  type GroupBy,
 } from "./types";
 import { ToolTag } from "./ui";
 import type { Editing } from "./Editor";
@@ -54,6 +67,107 @@ interface Syncing {
   preview: SyncPreview;
 }
 
+/** A collapsible run of skills under one section header. */
+interface Section {
+  key: string;
+  label: string;
+  items: SkillGroup[];
+}
+
+const UNCATEGORIZED = "__uncategorized__";
+const SCOPE_ORDER: Scope[] = ["claude-user", "shared", "codex-user", "project"];
+
+const GROUP_BY_OPTIONS: { value: GroupBy; label: string }[] = [
+  { value: "none", label: "不分组" },
+  { value: "category", label: "分类" },
+  { value: "tool", label: "工具" },
+  { value: "scope", label: "作用域" },
+];
+
+// A skill spans tools/scopes; bucket it into one combined section so each skill
+// lands in exactly one place (no duplicate rows / React-key clashes) for those
+// dimensions. Categories are the exception — see partition().
+function toolBucket(g: SkillGroup): { key: string; label: string } {
+  const claude = g.tools.includes("claude");
+  const codex = g.tools.includes("codex");
+  if (claude && codex) return { key: "claude+codex", label: "Claude · Codex" };
+  if (codex) return { key: "codex", label: "Codex" };
+  return { key: "claude", label: "Claude" };
+}
+
+function scopeBucket(g: SkillGroup): { key: string; label: string } {
+  const sorted = [...g.scopes].sort(
+    (a, b) => SCOPE_ORDER.indexOf(a) - SCOPE_ORDER.indexOf(b),
+  );
+  return {
+    key: sorted.join("+") || "—",
+    label: sorted.map((s) => SCOPE_LABELS[s]).join(" · ") || "—",
+  };
+}
+
+// Split the (already search/filter-narrowed) list into ordered sections.
+function partition(items: SkillGroup[], by: GroupBy, cfg: GroupConfig): Section[] {
+  if (by === "none") return [{ key: "all", label: "", items }];
+
+  const map = new Map<string, Section>();
+  const push = (key: string, label: string, g: SkillGroup) => {
+    const s = map.get(key) ?? { key, label, items: [] };
+    s.items.push(g);
+    map.set(key, s);
+  };
+
+  if (by === "category") {
+    for (const g of items) {
+      const cats = cfg.assignments[g.name] ?? [];
+      if (cats.length === 0) push(UNCATEGORIZED, "未分类", g);
+      else for (const c of cats) push(`cat:${c}`, c, g);
+    }
+    // Follow the user's declared category order; uncategorized always last.
+    const rank = (key: string) => {
+      if (key === UNCATEGORIZED) return Number.MAX_SAFE_INTEGER;
+      const i = cfg.categories.indexOf(key.slice(4));
+      return i < 0 ? Number.MAX_SAFE_INTEGER - 1 : i;
+    };
+    return [...map.values()].sort((a, b) => rank(a.key) - rank(b.key));
+  }
+
+  for (const g of items) {
+    const b = by === "tool" ? toolBucket(g) : scopeBucket(g);
+    push(b.key, b.label, g);
+  }
+  return [...map.values()].sort((a, b) => a.label.localeCompare(b.label));
+}
+
+// ---- pure GroupConfig transforms (frontend mirrors backend normalize) ----
+function assignCategory(cfg: GroupConfig, skill: string, cat: string): GroupConfig {
+  const cur = cfg.assignments[skill] ?? [];
+  if (cur.includes(cat)) return cfg;
+  return { ...cfg, assignments: { ...cfg.assignments, [skill]: [...cur, cat] } };
+}
+
+function unassignCategory(cfg: GroupConfig, skill: string, cat: string): GroupConfig {
+  const next = (cfg.assignments[skill] ?? []).filter((c) => c !== cat);
+  const assignments = { ...cfg.assignments };
+  if (next.length) assignments[skill] = next;
+  else delete assignments[skill];
+  return { ...cfg, assignments };
+}
+
+function createCategory(cfg: GroupConfig, name: string): GroupConfig {
+  const n = name.trim();
+  if (!n || cfg.categories.includes(n)) return cfg;
+  return { ...cfg, categories: [...cfg.categories, n] };
+}
+
+function deleteCategory(cfg: GroupConfig, name: string): GroupConfig {
+  const assignments: Record<string, string[]> = {};
+  for (const [skill, cats] of Object.entries(cfg.assignments)) {
+    const kept = cats.filter((c) => c !== name);
+    if (kept.length) assignments[skill] = kept;
+  }
+  return { ...cfg, categories: cfg.categories.filter((c) => c !== name), assignments };
+}
+
 function App() {
   const [result, setResult] = useState<ScanResult | null>(null);
   const [loading, setLoading] = useState(false);
@@ -61,6 +175,23 @@ function App() {
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<string | null>(null);
   const [filter, setFilter] = useState<Filter>("all");
+  const [railCollapsed, setRailCollapsed] = useState(
+    () => localStorage.getItem("rail-collapsed") === "1",
+  );
+  const [listPct, setListPct] = useState(() => {
+    const v = Number(localStorage.getItem("list-pct"));
+    return v >= 25 && v <= 75 ? v : 50;
+  });
+  const splitRef = useRef<HTMLDivElement>(null);
+  const [groupConfig, setGroupConfig] = useState<GroupConfig>({
+    version: 1,
+    categories: [],
+    assignments: {},
+  });
+  const [groupBy, setGroupBy] = useState<GroupBy>(
+    () => (localStorage.getItem("group-by") as GroupBy) || "none",
+  );
+  const [collapsedSections, setCollapsedSections] = useState<Set<string>>(new Set());
 
   const [pending, setPending] = useState<Pending | null>(null);
   const [busy, setBusy] = useState(false);
@@ -83,7 +214,57 @@ function App() {
 
   useEffect(() => {
     rescan();
+    readGroups().then(setGroupConfig).catch(() => {});
   }, []);
+
+  useEffect(() => {
+    localStorage.setItem("rail-collapsed", railCollapsed ? "1" : "0");
+  }, [railCollapsed]);
+
+  useEffect(() => {
+    localStorage.setItem("list-pct", String(Math.round(listPct)));
+  }, [listPct]);
+
+  // Drag the divider between the list and detail panes to rebalance them.
+  function startSplitDrag(e: React.MouseEvent) {
+    e.preventDefault();
+    function onMove(ev: MouseEvent) {
+      const rect = splitRef.current?.getBoundingClientRect();
+      if (!rect || rect.width === 0) return;
+      const pct = ((ev.clientX - rect.left) / rect.width) * 100;
+      setListPct(Math.max(25, Math.min(75, pct)));
+    }
+    function onUp() {
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    }
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }
+
+  useEffect(() => {
+    localStorage.setItem("group-by", groupBy);
+  }, [groupBy]);
+
+  // Single write path for category edits: update state optimistically, then
+  // persist. groups.json is non-critical, so a write failure only toasts.
+  function mutateGroups(next: GroupConfig) {
+    setGroupConfig(next);
+    writeGroups(next).catch((e) => setError(String(e)));
+  }
+
+  function toggleSection(key: string) {
+    setCollapsedSections((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
 
   async function requestOp(op: OpRequest) {
     try {
@@ -190,6 +371,28 @@ function App() {
     });
   }, [groups, query, filter]);
 
+  const sections = useMemo(
+    () => partition(visible, groupBy, groupConfig),
+    [visible, groupBy, groupConfig],
+  );
+
+  // Flat selection order for keyboard nav, honoring collapsed sections so the
+  // arrows skip hidden rows. De-duped because a skill may appear in several
+  // category sections.
+  const orderedNames = useMemo(() => {
+    const seen = new Set<string>();
+    const names: string[] = [];
+    for (const s of sections) {
+      if (collapsedSections.has(s.key)) continue;
+      for (const g of s.items) {
+        if (seen.has(g.name)) continue;
+        seen.add(g.name);
+        names.push(g.name);
+      }
+    }
+    return names;
+  }, [sections, collapsedSections]);
+
   const selectedGroup = useMemo(
     () => groups.find((g) => g.name === selected) ?? null,
     [groups, selected],
@@ -202,23 +405,35 @@ function App() {
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA") return;
       if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
-      if (visible.length === 0) return;
+      if (orderedNames.length === 0) return;
       e.preventDefault();
-      const idx = visible.findIndex((g) => g.name === selected);
+      const idx = orderedNames.indexOf(selected ?? "");
       const next =
         e.key === "ArrowDown"
-          ? Math.min(visible.length - 1, idx + 1)
+          ? Math.min(orderedNames.length - 1, idx + 1)
           : Math.max(0, idx < 0 ? 0 : idx - 1);
-      setSelected(visible[next]?.name ?? null);
+      setSelected(orderedNames[next] ?? null);
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [visible, selected, pending, editing, syncing]);
+  }, [orderedNames, selected, pending, editing, syncing]);
 
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-bg text-ink">
       {/* ---- command bar ---- */}
       <header className="flex h-11 flex-shrink-0 items-center gap-3 border-b border-line bg-rail px-3.5">
+        <button
+          className="icon-btn"
+          onClick={() => setRailCollapsed((c) => !c)}
+          title={railCollapsed ? "展开侧边栏" : "收起侧边栏"}
+          aria-label={railCollapsed ? "展开侧边栏" : "收起侧边栏"}
+        >
+          {railCollapsed ? (
+            <PanelLeftOpen size={15} strokeWidth={1.75} />
+          ) : (
+            <PanelLeftClose size={15} strokeWidth={1.75} />
+          )}
+        </button>
         <div className="flex items-center gap-2 pr-1">
           <span className="text-[15px] leading-none text-accent">◆</span>
           <span className="text-[13px] font-semibold tracking-tight">skill-hub</span>
@@ -260,16 +475,23 @@ function App() {
 
       <div className="flex flex-1 overflow-hidden">
         {/* ---- scope rail ---- */}
-        <nav className="flex w-[212px] flex-shrink-0 flex-col border-r border-line bg-rail">
-          <div className="px-3 pb-1 pt-3">
-            <span className="eyebrow">视图</span>
-          </div>
-          <div className="flex flex-col gap-0.5 px-2">
+        <nav
+          className={`flex flex-shrink-0 flex-col border-r border-line bg-rail transition-[width] duration-200 ${
+            railCollapsed ? "w-[52px]" : "w-[212px]"
+          }`}
+        >
+          {!railCollapsed && (
+            <div className="px-3 pb-1 pt-3">
+              <span className="eyebrow">视图</span>
+            </div>
+          )}
+          <div className={`flex flex-col gap-0.5 px-2 ${railCollapsed ? "pt-5" : ""}`}>
             <RailNav
               icon={<Layers size={15} strokeWidth={1.75} />}
               label="全部"
               count={counts.total}
               active={filter === "all"}
+              collapsed={railCollapsed}
               onClick={() => setFilter("all")}
             />
             <RailNav
@@ -278,6 +500,7 @@ function App() {
               count={counts.drift}
               tone="drift"
               active={filter === "drift"}
+              collapsed={railCollapsed}
               onClick={() => setFilter(filter === "drift" ? "all" : "drift")}
             />
             <RailNav
@@ -286,6 +509,7 @@ function App() {
               count={counts.broken}
               tone="broken"
               active={filter === "broken"}
+              collapsed={railCollapsed}
               onClick={() => setFilter(filter === "broken" ? "all" : "broken")}
             />
             <RailNav
@@ -294,80 +518,127 @@ function App() {
               count={counts.shared}
               tone="shared"
               active={filter === "shared"}
+              collapsed={railCollapsed}
               onClick={() => setFilter(filter === "shared" ? "all" : "shared")}
             />
           </div>
 
-          <div className="mt-auto border-t border-line px-3 py-3">
-            <div className="eyebrow mb-1.5">扫描根目录</div>
-            <ul className="flex flex-col gap-1">
-              {(result?.scanned_roots ?? []).map((r) => (
-                <li key={r} className="code truncate text-[10.5px] text-faint" title={r}>
-                  {r}
-                </li>
-              ))}
-            </ul>
-            {result && (
-              <div className="mt-2.5 text-[11px] text-faint">
-                <span className="text-dim">{result.total_instances}</span> 实例 ·{" "}
-                <span className="text-dim">{groups.length}</span> skill
+          {!railCollapsed && (
+            <div className="mt-4 px-3">
+              <div className="eyebrow mb-1.5">分组方式</div>
+              <div className="grid grid-cols-2 gap-1">
+                {GROUP_BY_OPTIONS.map((o) => (
+                  <button
+                    key={o.value}
+                    onClick={() => setGroupBy(o.value)}
+                    className={`rounded-sm px-2 py-1 text-[11.5px] transition-colors ${
+                      groupBy === o.value
+                        ? "bg-accent/15 text-accent"
+                        : "text-dim hover:bg-surface hover:text-ink"
+                    }`}
+                    style={
+                      groupBy === o.value
+                        ? { color: "var(--color-accent)", background: "color-mix(in srgb, var(--color-accent) 15%, transparent)" }
+                        : undefined
+                    }
+                  >
+                    {o.label}
+                  </button>
+                ))}
               </div>
-            )}
-          </div>
+            </div>
+          )}
+
+          {!railCollapsed && (
+            <div className="mt-auto border-t border-line px-3 py-3">
+              <div className="eyebrow mb-1.5">扫描根目录</div>
+              <ul className="flex flex-col gap-1">
+                {(result?.scanned_roots ?? []).map((r) => (
+                  <li key={r} className="code truncate text-[10.5px] text-faint" title={r}>
+                    {r}
+                  </li>
+                ))}
+              </ul>
+              {result && (
+                <div className="mt-2.5 text-[11px] text-faint">
+                  <span className="text-dim">{result.total_instances}</span> 实例 ·{" "}
+                  <span className="text-dim">{groups.length}</span> skill
+                </div>
+              )}
+            </div>
+          )}
         </nav>
 
-        {/* ---- list ---- */}
-        <ul className="min-w-0 flex-1 overflow-y-auto">
-          {visible.map((g) => {
-            const active = selected === g.name;
-            const desc = firstNonEmpty(g.instances.map((i) => i.description));
-            const hasDisabled = g.instances.some((i) => !i.enabled);
+        {/* ---- list + detail (resizable split) ---- */}
+        <div ref={splitRef} className="flex min-w-0 flex-1 overflow-hidden">
+          {/* ---- list ---- */}
+          <div className="min-w-0 shrink-0 overflow-y-auto" style={{ width: `${listPct}%` }}>
+          {sections.map((s) => {
+            const collapsed = collapsedSections.has(s.key);
             return (
-              <li
-                key={g.name}
-                onClick={() => setSelected(g.name)}
-                className={`relative cursor-pointer border-b border-line px-4 py-2.5 transition-colors ${
-                  active ? "bg-surface-2" : "hover:bg-surface"
-                }`}
-              >
-                <span
-                  className={`absolute left-0 top-0 h-full w-[2px] origin-top bg-accent transition-transform duration-150 ${
-                    active ? "scale-y-100" : "scale-y-0"
-                  }`}
-                />
-                <div className="flex items-center gap-2">
-                  <span className="truncate text-[13.5px] font-semibold">{g.name}</span>
-                  <span className="flex-1" />
-                  {g.tools.map((t) => (
-                    <ToolTag key={t} tool={t} />
-                  ))}
-                  <StatusDot drift={g.drift} broken={g.has_broken} />
-                </div>
-                <div className="mt-1 truncate text-[12px] text-dim">
-                  {desc ?? <span className="text-faint">（无 description）</span>}
-                </div>
-                <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-                  {g.scopes.map((s) => (
-                    <span key={s} className="chip">
-                      {SCOPE_LABELS[s]}
+              <div key={s.key}>
+                {s.label && (
+                  <button
+                    onClick={() => toggleSection(s.key)}
+                    className="sticky top-0 z-10 flex w-full items-center gap-2 border-b border-line bg-rail px-3.5 py-1.5 text-left hover:bg-surface"
+                  >
+                    <ChevronRight
+                      size={13}
+                      strokeWidth={2}
+                      className={`text-faint transition-transform duration-150 ${
+                        collapsed ? "" : "rotate-90"
+                      }`}
+                    />
+                    <span className="eyebrow">{s.label}</span>
+                    <span className="ml-auto text-[11px] tabular-nums text-faint">
+                      {s.items.length}
                     </span>
-                  ))}
-                  {g.shared && (
-                    <span className="chip" style={{ color: "var(--color-shared)" }}>
-                      <Share2 size={10} strokeWidth={2} /> ×{g.instances.length}
-                    </span>
-                  )}
-                  {hasDisabled && <span className="chip">含禁用</span>}
-                </div>
-              </li>
+                  </button>
+                )}
+                {!collapsed && (
+                  <ul>
+                    {s.items.map((g) => (
+                      <SkillRow
+                        key={`${s.key}/${g.name}`}
+                        g={g}
+                        active={selected === g.name}
+                        categories={groupConfig.assignments[g.name] ?? []}
+                        onClick={() => setSelected(g.name)}
+                      />
+                    ))}
+                  </ul>
+                )}
+              </div>
             );
           })}
           {!loading && visible.length === 0 && (
-            <li className="px-4 py-16 text-center text-faint">没有匹配的 skill</li>
+            <div className="px-4 py-16 text-center text-faint">没有匹配的 skill</div>
           )}
-        </ul>
+          </div>
 
-        <Detail group={selectedGroup} onOp={requestOp} onEdit={openEditor} onSync={requestSync} />
+          {/* ---- drag-to-resize divider ---- */}
+          <div
+            onMouseDown={startSplitDrag}
+            role="separator"
+            aria-orientation="vertical"
+            title="拖拽调整两栏宽度"
+            className="relative z-10 w-px shrink-0 cursor-col-resize bg-line transition-colors hover:bg-accent"
+          >
+            <span className="absolute inset-y-0 -left-1.5 -right-1.5" />
+          </div>
+
+          <Detail
+            group={selectedGroup}
+            config={groupConfig}
+            onOp={requestOp}
+            onEdit={openEditor}
+            onSync={requestSync}
+            onAssign={(skill, cat) => mutateGroups(assignCategory(groupConfig, skill, cat))}
+            onUnassign={(skill, cat) => mutateGroups(unassignCategory(groupConfig, skill, cat))}
+            onCreateCategory={(name) => mutateGroups(createCategory(groupConfig, name))}
+            onDeleteCategory={(name) => mutateGroups(deleteCategory(groupConfig, name))}
+          />
+        </div>
       </div>
 
       {pending && (
@@ -403,6 +674,7 @@ function RailNav({
   count,
   tone,
   active,
+  collapsed,
   onClick,
 }: {
   icon: React.ReactNode;
@@ -410,6 +682,7 @@ function RailNav({
   count: number;
   tone?: "drift" | "broken" | "shared";
   active?: boolean;
+  collapsed?: boolean;
   onClick: () => void;
 }) {
   const toneColor =
@@ -423,26 +696,110 @@ function RailNav({
   return (
     <button
       onClick={onClick}
-      className={`group relative flex items-center gap-2.5 rounded-sm px-2.5 py-1.5 text-left transition-colors ${
-        active ? "bg-surface-2 text-ink" : "text-dim hover:bg-surface hover:text-ink"
-      }`}
+      title={collapsed ? `${label} · ${count}` : undefined}
+      className={`group relative flex items-center rounded-sm py-1.5 text-left transition-colors ${
+        collapsed ? "justify-center px-0" : "gap-2.5 px-2.5"
+      } ${active ? "bg-surface-2 text-ink" : "text-dim hover:bg-surface hover:text-ink"}`}
     >
       <span
         className={`absolute left-0 top-1/2 h-4 w-[2px] -translate-y-1/2 rounded-full bg-accent transition-transform duration-150 ${
           active ? "scale-y-100" : "scale-y-0"
         }`}
       />
-      <span style={{ color: active && toneColor ? toneColor : undefined }} className="flex-shrink-0">
-        {icon}
-      </span>
-      <span className="flex-1 text-[12.5px]">{label}</span>
       <span
-        className="text-[12px] tabular-nums"
-        style={{ color: count > 0 && toneColor ? toneColor : "var(--color-faint)" }}
+        style={{ color: active && toneColor ? toneColor : undefined }}
+        className="relative flex-shrink-0"
       >
-        {count}
+        {icon}
+        {collapsed && count > 0 && (
+          <span
+            className="absolute -right-1.5 -top-1.5 min-w-[14px] rounded-full px-1 text-center text-[9px] font-semibold leading-[14px] tabular-nums"
+            style={{
+              background: toneColor ?? "var(--color-faint)",
+              color: "var(--color-bg)",
+            }}
+          >
+            {count}
+          </span>
+        )}
       </span>
+      {!collapsed && (
+        <>
+          <span className="flex-1 text-[12.5px]">{label}</span>
+          <span
+            className="text-[12px] tabular-nums"
+            style={{ color: count > 0 && toneColor ? toneColor : "var(--color-faint)" }}
+          >
+            {count}
+          </span>
+        </>
+      )}
     </button>
+  );
+}
+
+function SkillRow({
+  g,
+  active,
+  categories,
+  onClick,
+}: {
+  g: SkillGroup;
+  active: boolean;
+  categories: string[];
+  onClick: () => void;
+}) {
+  const desc = firstNonEmpty(g.instances.map((i) => i.description));
+  const hasDisabled = g.instances.some((i) => !i.enabled);
+  return (
+    <li
+      onClick={onClick}
+      className={`relative cursor-pointer border-b border-line px-4 py-2.5 transition-colors ${
+        active ? "bg-surface-2" : "hover:bg-surface"
+      }`}
+    >
+      <span
+        className={`absolute left-0 top-0 h-full w-[2px] origin-top bg-accent transition-transform duration-150 ${
+          active ? "scale-y-100" : "scale-y-0"
+        }`}
+      />
+      <div className="flex items-center gap-2">
+        <span className="truncate text-[13.5px] font-semibold">{g.name}</span>
+        <span className="flex-1" />
+        {g.tools.map((t) => (
+          <ToolTag key={t} tool={t} />
+        ))}
+        <StatusDot drift={g.drift} broken={g.has_broken} />
+      </div>
+      <div className="mt-1 truncate text-[12px] text-dim">
+        {desc ?? <span className="text-faint">（无 description）</span>}
+      </div>
+      <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+        {g.scopes.map((s) => (
+          <span key={s} className="chip">
+            {SCOPE_LABELS[s]}
+          </span>
+        ))}
+        {g.shared && (
+          <span className="chip" style={{ color: "var(--color-shared)" }}>
+            <Share2 size={10} strokeWidth={2} /> ×{g.instances.length}
+          </span>
+        )}
+        {hasDisabled && <span className="chip">含禁用</span>}
+        {categories.map((c) => (
+          <span
+            key={c}
+            className="chip"
+            style={{
+              color: "var(--color-accent)",
+              borderColor: "color-mix(in srgb, var(--color-accent) 45%, transparent)",
+            }}
+          >
+            <Tag size={9} strokeWidth={2} /> {c}
+          </span>
+        ))}
+      </div>
+    </li>
   );
 }
 
@@ -454,18 +811,28 @@ function StatusDot({ drift, broken }: { drift: boolean; broken: boolean }) {
 
 function Detail({
   group,
+  config,
   onOp,
   onEdit,
   onSync,
+  onAssign,
+  onUnassign,
+  onCreateCategory,
+  onDeleteCategory,
 }: {
   group: SkillGroup | null;
+  config: GroupConfig;
   onOp: (op: OpRequest) => void;
   onEdit: (inst: SkillInstance) => void;
   onSync: (inst: SkillInstance, target: Tool) => void;
+  onAssign: (skill: string, cat: string) => void;
+  onUnassign: (skill: string, cat: string) => void;
+  onCreateCategory: (name: string) => void;
+  onDeleteCategory: (name: string) => void;
 }) {
   if (!group) {
     return (
-      <aside className="flex w-[404px] flex-shrink-0 items-center justify-center border-l border-line bg-panel p-8">
+      <aside className="flex min-w-0 flex-1 items-center justify-center bg-panel p-8">
         <p className="max-w-[220px] text-center text-[12.5px] leading-relaxed text-faint">
           选择左侧 skill，查看每个安装实例并管理。
           <br />
@@ -475,7 +842,7 @@ function Detail({
     );
   }
   return (
-    <aside className="flex w-[404px] flex-shrink-0 flex-col overflow-y-auto border-l border-line bg-panel">
+    <aside className="flex min-w-0 flex-1 flex-col overflow-y-auto bg-panel">
       <div className="border-b border-line px-4 py-3.5">
         <h2 className="text-[16px] font-semibold leading-tight">{group.name}</h2>
         <div className="mt-1 flex items-center gap-2 text-[11.5px] text-dim">
@@ -488,6 +855,16 @@ function Detail({
           </div>
         </div>
       </div>
+
+      <CategoryEditor
+        key={group.name}
+        skill={group.name}
+        config={config}
+        onAssign={onAssign}
+        onUnassign={onUnassign}
+        onCreateCategory={onCreateCategory}
+        onDeleteCategory={onDeleteCategory}
+      />
 
       {group.drift && (
         <div className="mx-4 mt-4 flex items-start gap-2 rounded-md border border-[color-mix(in_srgb,var(--color-drift)_35%,transparent)] bg-[color-mix(in_srgb,var(--color-drift)_10%,transparent)] px-3 py-2.5 text-[11.5px] leading-relaxed text-drift">
@@ -502,6 +879,128 @@ function Detail({
         ))}
       </div>
     </aside>
+  );
+}
+
+function CategoryEditor({
+  skill,
+  config,
+  onAssign,
+  onUnassign,
+  onCreateCategory,
+  onDeleteCategory,
+}: {
+  skill: string;
+  config: GroupConfig;
+  onAssign: (skill: string, cat: string) => void;
+  onUnassign: (skill: string, cat: string) => void;
+  onCreateCategory: (name: string) => void;
+  onDeleteCategory: (name: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState("");
+  const assigned = config.assignments[skill] ?? [];
+  const accentChip = {
+    color: "var(--color-accent)",
+    borderColor: "color-mix(in srgb, var(--color-accent) 45%, transparent)",
+  };
+
+  function submitNew() {
+    const name = draft.trim();
+    if (!name) return;
+    if (!config.categories.includes(name)) onCreateCategory(name);
+    onAssign(skill, name);
+    setDraft("");
+  }
+
+  return (
+    <div className="border-b border-line px-4 py-3">
+      <div className="flex items-center gap-2">
+        <span className="eyebrow">分类</span>
+        <button
+          className="icon-btn ml-auto h-6 w-6"
+          onClick={() => setOpen((o) => !o)}
+          title={open ? "收起" : "管理分类"}
+          aria-label={open ? "收起" : "管理分类"}
+        >
+          {open ? <X size={13} strokeWidth={1.75} /> : <Plus size={13} strokeWidth={1.75} />}
+        </button>
+      </div>
+
+      <div className="mt-2 flex flex-wrap gap-1.5">
+        {assigned.length === 0 && !open && (
+          <span className="text-[11.5px] text-faint">未归类 · 点击 + 添加</span>
+        )}
+        {assigned.map((c) => (
+          <button
+            key={c}
+            className="chip"
+            style={accentChip}
+            onClick={() => onUnassign(skill, c)}
+            title="点击移除"
+          >
+            <Tag size={9} strokeWidth={2} /> {c} <X size={10} strokeWidth={2} className="opacity-60" />
+          </button>
+        ))}
+      </div>
+
+      {open && (
+        <div className="mt-2.5 rounded-md border border-line bg-surface p-2">
+          <div className="flex flex-col gap-0.5">
+            {config.categories.length === 0 && (
+              <span className="px-1 py-1 text-[11.5px] text-faint">还没有分类，在下方新建</span>
+            )}
+            {config.categories.map((c) => {
+              const on = assigned.includes(c);
+              return (
+                <div
+                  key={c}
+                  className="flex items-center gap-2 rounded-sm px-1 py-1 hover:bg-surface-2"
+                >
+                  <button
+                    className="flex flex-1 items-center gap-2 text-left"
+                    onClick={() => (on ? onUnassign(skill, c) : onAssign(skill, c))}
+                  >
+                    <span
+                      className="flex h-3.5 w-3.5 flex-shrink-0 items-center justify-center rounded-[3px] border"
+                      style={{
+                        borderColor: on ? "var(--color-accent)" : "var(--color-line-2)",
+                        background: on ? "var(--color-accent)" : "transparent",
+                      }}
+                    >
+                      {on && <Check size={10} strokeWidth={3} color="var(--color-bg)" />}
+                    </span>
+                    <span className="text-[12px]">{c}</span>
+                  </button>
+                  <button
+                    className="icon-btn h-5 w-5 text-faint hover:text-broken"
+                    title="删除该分类（从所有 skill 移除）"
+                    aria-label="删除该分类"
+                    onClick={() => onDeleteCategory(c)}
+                  >
+                    <Trash2 size={11} strokeWidth={1.75} />
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+          <div className="mt-1.5 flex items-center gap-1.5 border-t border-line pt-2">
+            <input
+              className="field flex-1 px-2 py-1 text-[12px]"
+              placeholder="新建分类…"
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") submitNew();
+              }}
+            />
+            <button className="btn btn-sm btn-go" onClick={submitNew} disabled={!draft.trim()}>
+              添加
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 

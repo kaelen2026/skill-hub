@@ -127,6 +127,20 @@ export interface SyncResult {
   error: string | null;
 }
 
+// ---- Phase 5: custom categories (grouping) ----
+// Mirrors src-tauri/src/groups.rs. Skills are keyed by aggregate `name`.
+
+export interface GroupConfig {
+  version: number;
+  /** Ordered list of category names the user has defined. */
+  categories: string[];
+  /** skill name → categories it belongs to. */
+  assignments: Record<string, string[]>;
+}
+
+/** How the skill list is partitioned into collapsible sections. */
+export type GroupBy = "none" | "tool" | "scope" | "category";
+
 export const SCOPE_LABELS: Record<Scope, string> = {
   "claude-user": "Claude 用户",
   shared: "共享池",
