@@ -7,7 +7,7 @@
 
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -93,9 +93,10 @@ fn home() -> PathBuf {
     dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"))
 }
 
-/// Fixed global scopes, plus any extra project roots the caller supplies.
-/// `extra_roots` are treated as project directories: we look for both
-/// `<root>/.claude/skills` and `<root>/.codex/skills` under each.
+/// The canonical home-level scopes, plus any caller-supplied project roots,
+/// plus everything discovered by a full recursive sweep of `$HOME`. The fixed
+/// home-level roots are listed first so dedup keeps their semantic scope label
+/// (claude-user / shared / codex-user) when discovery re-finds the same dir.
 fn build_roots(extra_roots: &[String]) -> Vec<Root> {
     let h = home();
     let mut roots = vec![
@@ -128,7 +129,100 @@ fn build_roots(extra_roots: &[String]) -> Vec<Root> {
             tool: "codex",
         });
     }
+
+    // Full scan: find every `.claude|.codex|.agents/skills` dir anywhere under
+    // home (project skills live in repos scattered across the disk).
+    discover_skill_roots(&h, &mut roots);
+
+    // Dedup by directory, keeping the first occurrence so the fixed home-level
+    // scopes win over their project-labeled rediscovery.
+    let mut seen = HashSet::new();
+    roots.retain(|r| seen.insert(r.dir.clone()));
     roots
+}
+
+/// How deep the discovery sweep descends from `$HOME`. A project's skills dir
+/// (`~/code/<org>/<repo>/.claude/skills`) sits only a handful of levels down;
+/// the cap bounds cost and rules out pathological trees.
+const MAX_DISCOVERY_DEPTH: usize = 12;
+
+/// Directory names never worth descending: heavy build/vendor trees and caches
+/// that can't contain a skill we care about. Keeps the sweep fast.
+fn is_pruned_dir(name: &str) -> bool {
+    matches!(
+        name,
+        "node_modules"
+            | "target"
+            | "dist"
+            | "build"
+            | "out"
+            | "vendor"
+            | "Pods"
+            | "DerivedData"
+            | "__pycache__"
+            | "venv"
+            | "Library"
+            | "Applications"
+            | "Caches"
+            | ".git"
+            | ".cache"
+            | ".Trash"
+            | ".venv"
+            | ".next"
+            | ".nuxt"
+            | ".svelte-kit"
+            | ".gradle"
+            | ".m2"
+    )
+}
+
+/// Recursively sweep `start` for skill roots, appending any found to `out`.
+fn discover_skill_roots(start: &Path, out: &mut Vec<Root>) {
+    discover_walk(start, 0, out);
+}
+
+fn discover_walk(dir: &Path, depth: usize, out: &mut Vec<Root>) {
+    if depth >= MAX_DISCOVERY_DEPTH {
+        return;
+    }
+    let entries = match fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        // Use the dirent's own type: don't follow symlinks (avoids cycles and
+        // escaping the home tree). Skip files outright.
+        match entry.file_type() {
+            Ok(t) if t.is_dir() => {}
+            _ => continue,
+        }
+        let name = entry.file_name().to_string_lossy().to_string();
+        let p = entry.path();
+        match name.as_str() {
+            ".claude" => register_skill_dir(&p, "claude", out),
+            ".codex" => register_skill_dir(&p, "codex", out),
+            ".agents" => register_skill_dir(&p, "claude", out),
+            _ => {
+                // Don't descend into other hidden dirs or known-heavy trees.
+                if name.starts_with('.') || is_pruned_dir(&name) {
+                    continue;
+                }
+                discover_walk(&p, depth + 1, out);
+            }
+        }
+    }
+}
+
+/// If `<dotdir>/skills` exists, register it as a project-scope root.
+fn register_skill_dir(dotdir: &Path, tool: &'static str, out: &mut Vec<Root>) {
+    let skills = dotdir.join("skills");
+    if skills.is_dir() {
+        out.push(Root {
+            dir: skills,
+            scope: "project",
+            tool,
+        });
+    }
 }
 
 pub fn scan(extra_roots: &[String]) -> ScanResult {
@@ -557,6 +651,38 @@ mod tests {
             .get("metadata")
             .and_then(|m| str_field(m, "short-description"));
         assert_eq!(sd.as_deref(), Some("sd"));
+    }
+
+    #[test]
+    fn discovery_finds_nested_roots_and_prunes() {
+        let base = std::env::temp_dir().join("skillhub-discovery-test");
+        let _ = fs::remove_dir_all(&base);
+        // A real project skill a few levels down.
+        let proj = base.join("code/org/repo/.claude/skills/foo");
+        fs::create_dir_all(&proj).unwrap();
+        fs::write(proj.join("SKILL.md"), "---\nname: foo\n---\nx").unwrap();
+        // A skill buried in node_modules must be pruned, not discovered.
+        let buried = base.join("code/org/repo/node_modules/pkg/.claude/skills/bar");
+        fs::create_dir_all(&buried).unwrap();
+        fs::write(buried.join("SKILL.md"), "---\nname: bar\n---\nx").unwrap();
+
+        let mut roots = Vec::new();
+        discover_skill_roots(&base, &mut roots);
+        let dirs: Vec<String> = roots
+            .iter()
+            .map(|r| r.dir.to_string_lossy().into())
+            .collect();
+
+        assert!(
+            dirs.iter().any(|d| d.ends_with("repo/.claude/skills")),
+            "should discover the project skills dir, got {dirs:?}"
+        );
+        assert!(
+            !dirs.iter().any(|d| d.contains("node_modules")),
+            "node_modules must be pruned, got {dirs:?}"
+        );
+        assert!(roots.iter().all(|r| r.scope == "project"));
+        let _ = fs::remove_dir_all(&base);
     }
 
     #[test]
