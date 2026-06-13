@@ -45,6 +45,12 @@ export const MOCK_SCAN: ScanResult = {
           short_description: "Distinctive, production-grade UI",
           body_hash: "a3f9c1d4e8b2",
           has_codex_companion: false,
+          files: [
+            { rel: "references/typography.md", path: "~/.claude/skills/design/references/typography.md", size: 8421 },
+            { rel: "references/color.md", path: "~/.claude/skills/design/references/color.md", size: 5310 },
+            { rel: "scripts/screenshot.sh", path: "~/.claude/skills/design/scripts/screenshot.sh", size: 642 },
+            { rel: "assets/grid.svg", path: "~/.claude/skills/design/assets/grid.svg", size: 2048 },
+          ],
           error: null,
         },
         {

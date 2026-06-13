@@ -19,7 +19,15 @@ export interface SkillInstance {
   short_description: string | null;
   body_hash: string | null;
   has_codex_companion: boolean;
+  files?: SkillFileRef[];
   error: string | null;
+}
+
+/** A file bundled inside a skill directory (excludes SKILL.md). */
+export interface SkillFileRef {
+  rel: string;
+  path: string;
+  size: number;
 }
 
 export interface SkillGroup {

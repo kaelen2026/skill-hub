@@ -24,6 +24,7 @@ import {
   Check,
   Sun,
   Moon,
+  FileText,
 } from "lucide-react";
 import {
   scanSkills,
@@ -32,6 +33,7 @@ import {
   previewOp,
   applyOp,
   readSkillMd,
+  readFile,
   previewSync,
   applySync,
   readGroups,
@@ -42,6 +44,7 @@ import {
   type ScanResult,
   type SkillGroup,
   type SkillInstance,
+  type SkillFileRef,
   type OpRequest,
   type OpPreview,
   type Tool,
@@ -297,7 +300,17 @@ function App() {
 
   async function openEditor(inst: SkillInstance) {
     try {
-      setEditing({ inst, file: await readSkillMd(inst.path) });
+      setEditing({ inst, file: await readSkillMd(inst.path), validate: true });
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  // Open a bundled file (script/doc/asset) in the in-app editor — no SKILL.md
+  // frontmatter validation, just raw-text edit + backup-on-save.
+  async function openFile(inst: SkillInstance, path: string) {
+    try {
+      setEditing({ inst, file: await readFile(path), validate: false });
     } catch (e) {
       setError(String(e));
     }
@@ -665,6 +678,7 @@ function App() {
             config={groupConfig}
             onOp={requestOp}
             onEdit={openEditor}
+            onOpenFile={openFile}
             onSync={requestSync}
             onAssign={(skill, cat) => mutateGroups(assignCategory(groupConfig, skill, cat))}
             onUnassign={(skill, cat) => mutateGroups(unassignCategory(groupConfig, skill, cat))}
@@ -847,6 +861,7 @@ function Detail({
   config,
   onOp,
   onEdit,
+  onOpenFile,
   onSync,
   onAssign,
   onUnassign,
@@ -857,6 +872,7 @@ function Detail({
   config: GroupConfig;
   onOp: (op: OpRequest) => void;
   onEdit: (inst: SkillInstance) => void;
+  onOpenFile: (inst: SkillInstance, path: string) => void;
   onSync: (inst: SkillInstance, target: Tool) => void;
   onAssign: (skill: string, cat: string) => void;
   onUnassign: (skill: string, cat: string) => void;
@@ -908,7 +924,14 @@ function Detail({
 
       <div className="flex flex-col gap-3 p-4">
         {group.instances.map((inst) => (
-          <InstanceCard key={inst.path} inst={inst} onOp={onOp} onEdit={onEdit} onSync={onSync} />
+          <InstanceCard
+            key={inst.path}
+            inst={inst}
+            onOp={onOp}
+            onEdit={onEdit}
+            onOpenFile={onOpenFile}
+            onSync={onSync}
+          />
         ))}
       </div>
     </aside>
@@ -1037,15 +1060,82 @@ function CategoryEditor({
   );
 }
 
+function formatSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(bytes < 10240 ? 1 : 0)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+// Bundled files a skill ships alongside SKILL.md. Collapsed past a few rows so
+// a big bundle doesn't dominate the card; each row opens the file.
+function FileList({
+  files,
+  onOpen,
+}: {
+  files: SkillFileRef[];
+  onOpen: (f: SkillFileRef) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const LIMIT = 6;
+  const shown = expanded ? files : files.slice(0, LIMIT);
+  const hidden = files.length - shown.length;
+
+  return (
+    <div className="mt-3 border-t border-line pt-2.5">
+      <div className="eyebrow mb-1.5 flex items-center gap-1.5">
+        <FileText size={11} strokeWidth={2} />
+        引用文件
+        <span className="text-faint">· {files.length}</span>
+      </div>
+      <ul className="flex flex-col gap-0.5">
+        {shown.map((f) => (
+          <li key={f.path}>
+            <button
+              onClick={() => onOpen(f)}
+              title={`在应用内编辑 ${f.rel}`}
+              className="group flex w-full items-center gap-2 rounded-xs px-1.5 py-1 text-left transition-colors hover:bg-surface-2"
+            >
+              <code className="code min-w-0 flex-1 truncate text-dim group-hover:text-ink">
+                {f.rel}
+              </code>
+              <span className="flex-shrink-0 text-[10.5px] tabular-nums text-faint">
+                {formatSize(f.size)}
+              </span>
+            </button>
+          </li>
+        ))}
+      </ul>
+      {hidden > 0 && (
+        <button
+          onClick={() => setExpanded(true)}
+          className="mt-1 px-1.5 text-[11px] text-faint hover:text-dim"
+        >
+          展开其余 {hidden} 个…
+        </button>
+      )}
+      {expanded && files.length > LIMIT && (
+        <button
+          onClick={() => setExpanded(false)}
+          className="mt-1 px-1.5 text-[11px] text-faint hover:text-dim"
+        >
+          收起
+        </button>
+      )}
+    </div>
+  );
+}
+
 function InstanceCard({
   inst,
   onOp,
   onEdit,
+  onOpenFile,
   onSync,
 }: {
   inst: SkillInstance;
   onOp: (op: OpRequest) => void;
   onEdit: (inst: SkillInstance) => void;
+  onOpenFile: (inst: SkillInstance, path: string) => void;
   onSync: (inst: SkillInstance, target: Tool) => void;
 }) {
   const isSymlink = inst.kind === "symlink";
@@ -1099,6 +1189,10 @@ function InstanceCard({
           <span className="w-9 flex-shrink-0 text-faint">body</span>
           <code className="code">{inst.body_hash.slice(0, 12)}</code>
         </div>
+      )}
+
+      {inst.files && inst.files.length > 0 && (
+        <FileList files={inst.files} onOpen={(f) => onOpenFile(inst, f.path)} />
       )}
 
       <div className="mt-3 flex flex-wrap gap-1.5">

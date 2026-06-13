@@ -78,6 +78,30 @@ pub fn read(dir: &str) -> Result<SkillFile, String> {
     })
 }
 
+/// Read an arbitrary file bundled inside a skill (a referenced script, doc,
+/// asset, …) for in-app editing. Refuses Codex `.system` files and anything
+/// that isn't valid UTF-8 text (binary assets can't be edited as text).
+pub fn read_file(path: &str) -> Result<SkillFile, String> {
+    let p = Path::new(path);
+    if !p.is_file() {
+        return Err("文件不存在".into());
+    }
+    let bytes = fs::read(p).map_err(|e| e.to_string())?;
+    let content = String::from_utf8(bytes).map_err(|_| "二进制文件，无法以文本编辑".to_string())?;
+    let system = is_system_path(p);
+    Ok(SkillFile {
+        file_path: p.to_string_lossy().to_string(),
+        content,
+        enabled: true,
+        editable: !system,
+        locked_reason: if system {
+            Some("Codex 内置技能，只读".into())
+        } else {
+            None
+        },
+    })
+}
+
 /// Validate raw SKILL.md text for the given target tool ("claude" | "codex").
 pub fn validate(content: &str, tool: &str) -> ValidationReport {
     let (frontmatter, body) = split_frontmatter(content);
@@ -334,6 +358,26 @@ mod tests {
             "---\nname: a\ndescription: b\n---\nx",
         );
         assert!(!res.ok);
+    }
+
+    #[test]
+    fn read_file_reads_text_and_refuses_binary() {
+        let dir = std::env::temp_dir().join("skillhub-readfile-test");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        let text = dir.join("script.sh");
+        fs::write(&text, "#!/bin/sh\necho hi\n").unwrap();
+        let f = read_file(text.to_str().unwrap()).unwrap();
+        assert!(f.editable && f.enabled);
+        assert!(f.content.contains("echo hi"));
+
+        let bin = dir.join("blob.bin");
+        fs::write(&bin, [0xffu8, 0xfe, 0x00, 0x01]).unwrap();
+        assert!(read_file(bin.to_str().unwrap()).is_err());
+
+        assert!(read_file(dir.join("missing").to_str().unwrap()).is_err());
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

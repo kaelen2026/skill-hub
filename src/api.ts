@@ -46,6 +46,18 @@ export function readSkillMd(dir: string): Promise<SkillFile> {
   return invoke<SkillFile>("read_skill_md", { dir });
 }
 
+export function readFile(path: string): Promise<SkillFile> {
+  if (!TAURI)
+    return Promise.resolve({
+      file_path: path,
+      content: `// mock: ${path}\n`,
+      enabled: true,
+      editable: true,
+      locked_reason: null,
+    });
+  return invoke<SkillFile>("read_file", { path });
+}
+
 export function validateSkillMd(content: string, tool: string): Promise<ValidationReport> {
   if (!TAURI) return Promise.resolve(MOCK_VALIDATION);
   return invoke<ValidationReport>("validate_skill_md", { content, tool });

@@ -10,6 +10,8 @@ import { ToolTag } from "./ui";
 export interface Editing {
   inst: SkillInstance;
   file: SkillFile;
+  /** Run SKILL.md frontmatter validation. False for arbitrary bundled files. */
+  validate?: boolean;
 }
 
 // Lazy-loaded: this module pulls in CodeMirror (~600kB), so it is split out of
@@ -26,14 +28,17 @@ export default function Editor({
   onSaved: (backupPath: string | null) => void;
 }) {
   const { inst, file } = editing;
+  const validate = editing.validate ?? true;
   const [content, setContent] = useState(file.content);
   const [report, setReport] = useState<ValidationReport | null>(null);
   const [saving, setSaving] = useState(false);
   const debounce = useRef<number | undefined>(undefined);
 
   const dirty = content !== file.content;
+  const fileName = file.file_path.split("/").pop() ?? file.file_path;
 
   useEffect(() => {
+    if (!validate) return;
     window.clearTimeout(debounce.current);
     debounce.current = window.setTimeout(() => {
       validateSkillMd(content, inst.tool)
@@ -41,9 +46,9 @@ export default function Editor({
         .catch((e) => onError(String(e)));
     }, 220);
     return () => window.clearTimeout(debounce.current);
-  }, [content, inst.tool, onError]);
+  }, [content, inst.tool, onError, validate]);
 
-  const hasErrors = report ? !report.ok : false;
+  const hasErrors = validate && report ? !report.ok : false;
   const canSave = file.editable && dirty && !hasErrors && !saving;
 
   async function save() {
@@ -69,6 +74,11 @@ export default function Editor({
       <div className="flex flex-shrink-0 items-center gap-3 border-b border-line bg-rail px-4 py-2.5">
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-[15px] font-semibold">{inst.name}</span>
+          {!validate && (
+            <span className="chip" style={{ color: "var(--color-accent)" }}>
+              {fileName}
+            </span>
+          )}
           <span className="chip">{SCOPE_LABELS[inst.scope]}</span>
           <ToolTag tool={inst.tool} />
           {!file.enabled && <span className="chip">已禁用</span>}
@@ -113,6 +123,7 @@ export default function Editor({
             }}
           />
         </div>
+        {validate && (
         <div className="w-[304px] flex-shrink-0 overflow-y-auto border-l border-line bg-panel p-4">
           <div className="eyebrow mb-3">校验</div>
           {report && (
@@ -174,6 +185,7 @@ export default function Editor({
             </>
           )}
         </div>
+        )}
       </div>
     </div>
   );

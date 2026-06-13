@@ -35,6 +35,12 @@ fn read_skill_md(dir: String) -> Result<SkillFile, String> {
     editor::read(&dir)
 }
 
+/// Read an arbitrary bundled file (script/doc/asset) for in-app editing.
+#[tauri::command]
+fn read_file(path: String) -> Result<SkillFile, String> {
+    editor::read_file(&path)
+}
+
 /// Phase 3: validate raw SKILL.md text for a target tool.
 #[tauri::command]
 fn validate_skill_md(content: String, tool: String) -> ValidationReport {
@@ -103,6 +109,7 @@ pub fn run() {
             preview_op,
             apply_op,
             read_skill_md,
+            read_file,
             validate_skill_md,
             write_skill_md,
             preview_sync,

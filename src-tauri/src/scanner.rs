@@ -42,8 +42,23 @@ pub struct SkillInstance {
     pub body_hash: Option<String>,
     /// Codex companion file present (`agents/openai.yaml`).
     pub has_codex_companion: bool,
+    /// Bundled files the skill ships alongside SKILL.md (scripts, references,
+    /// assets, the openai.yaml companion, …). SKILL.md itself is excluded.
+    pub files: Vec<SkillFileRef>,
     /// Non-fatal parse problem, surfaced instead of dropping the instance.
     pub error: Option<String>,
+}
+
+/// A file bundled inside a skill directory (the "referenced" files a SKILL.md
+/// points at: scripts, reference docs, assets, the openai.yaml companion).
+#[derive(Debug, Clone, Serialize)]
+pub struct SkillFileRef {
+    /// Path relative to the skill directory, '/'-separated.
+    pub rel: String,
+    /// Absolute path on disk.
+    pub path: String,
+    /// Size in bytes.
+    pub size: u64,
 }
 
 /// All installs that share a `name`.
@@ -231,8 +246,15 @@ fn collect_from_dir(
             short_description: None,
             body_hash: None,
             has_codex_companion: child.join("agents/openai.yaml").is_file(),
+            files: Vec::new(),
             error: None,
         };
+
+        // List bundled files (everything but the SKILL.md). Skipped for broken
+        // instances, where the directory/target isn't readable anyway.
+        if !broken {
+            inst.files = collect_skill_files(&child);
+        }
 
         if skill_md_present || disabled_present {
             match parse_skill_md(source_md) {
@@ -252,6 +274,67 @@ fn collect_from_dir(
         }
 
         out.push(inst);
+    }
+}
+
+/// Cap so a pathological skill dir can't produce an unbounded list.
+const MAX_SKILL_FILES: usize = 500;
+/// Recursion bound. `fs::metadata` follows symlinks, so a self-referential or
+/// cyclic directory symlink (e.g. `skill/loop -> skill`) would otherwise
+/// recurse forever — and a cycle with no files never trips MAX_SKILL_FILES,
+/// since that cap only fires once files are pushed. Real bundles are shallow.
+const MAX_SKILL_DEPTH: usize = 16;
+
+/// Recursively list files inside a skill directory, excluding the SKILL.md
+/// itself, dotfiles, and dot-directories. Returned sorted by relative path.
+fn collect_skill_files(skill_dir: &Path) -> Vec<SkillFileRef> {
+    let mut out = Vec::new();
+    walk_files(skill_dir, skill_dir, 0, &mut out);
+    out.sort_by(|a, b| a.rel.cmp(&b.rel));
+    out.truncate(MAX_SKILL_FILES);
+    out
+}
+
+fn walk_files(base: &Path, dir: &Path, depth: usize, out: &mut Vec<SkillFileRef>) {
+    if depth >= MAX_SKILL_DEPTH || out.len() >= MAX_SKILL_FILES {
+        return;
+    }
+    let entries = match fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        // Skip .DS_Store, .git, and other hidden cruft.
+        if name.starts_with('.') {
+            continue;
+        }
+        let p = entry.path();
+        // Follow symlinks so a linked file/dir inside still resolves.
+        let meta = match fs::metadata(&p) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        if meta.is_dir() {
+            walk_files(base, &p, depth + 1, out);
+        } else if meta.is_file() {
+            let rel = p
+                .strip_prefix(base)
+                .unwrap_or(&p)
+                .to_string_lossy()
+                .replace('\\', "/");
+            if rel == "SKILL.md" || rel == "SKILL.md.disabled" {
+                continue;
+            }
+            out.push(SkillFileRef {
+                rel,
+                path: p.to_string_lossy().to_string(),
+                size: meta.len(),
+            });
+        }
+        if out.len() >= MAX_SKILL_FILES {
+            return;
+        }
     }
 }
 
@@ -474,6 +557,24 @@ mod tests {
             .get("metadata")
             .and_then(|m| str_field(m, "short-description"));
         assert_eq!(sd.as_deref(), Some("sd"));
+    }
+
+    #[test]
+    fn collect_files_survives_symlink_cycle() {
+        // A directory symlink pointing back at its parent must not recurse
+        // forever (it would abort the process, not panic).
+        let dir = std::env::temp_dir().join("skillhub-cycle-test");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("real.txt"), "x").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&dir, dir.join("loop")).unwrap();
+
+        let files = collect_skill_files(&dir);
+        // Returns bounded results without hanging; the real file is present.
+        assert!(files.len() <= MAX_SKILL_FILES);
+        assert!(files.iter().any(|f| f.rel == "real.txt"));
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
