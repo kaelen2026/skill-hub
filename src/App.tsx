@@ -207,11 +207,20 @@ function App() {
   const [syncing, setSyncing] = useState<Syncing | null>(null);
   const [syncBusy, setSyncBusy] = useState(false);
 
-  async function rescan() {
+  async function rescan(notify = false) {
     setLoading(true);
     setError(null);
+    const started = performance.now();
     try {
-      setResult(await scanSkills());
+      const res = await scanSkills();
+      setResult(res);
+      if (notify) {
+        // The scan is near-instant; hold the spinner briefly so the click
+        // reads as an action, then confirm the result with a toast.
+        const elapsed = performance.now() - started;
+        if (elapsed < 450) await new Promise((r) => setTimeout(r, 450 - elapsed));
+        setToast(`已扫描 · ${res.groups.length} 个 skill · ${res.total_instances} 个实例`);
+      }
     } catch (e) {
       setError(String(e));
     } finally {
@@ -477,7 +486,7 @@ function App() {
         </button>
         <button
           className="icon-btn"
-          onClick={rescan}
+          onClick={() => rescan(true)}
           disabled={loading}
           title="重新扫描"
           aria-label="重新扫描"
