@@ -52,6 +52,35 @@ PATH="$HOME/.rustup/toolchains/stable-aarch64-apple-darwin/bin:$PATH" \
 `bundle.targets` is `"all"` in `tauri.conf.json`, so this emits both the `.app`
 and the `.dmg`.
 
+### If DMG bundling fails (`bundle_dmg.sh` error)
+
+The `.app` builds fine but the DMG step can fail with:
+
+```
+failed to bundle project error running bundle_dmg.sh
+```
+
+Cause: Tauri's `bundle_dmg.sh` drives **Finder via AppleScript** to lay out the
+disk-image window, which needs Automation permission. Headless / CLI / no-GUI-
+automation environments (the same ones where `screencapture` lacks screen-
+recording permission) don't have it, so the script aborts. It is *not* a compile
+failure — the release binary and `.app` are already good.
+
+Fallback: build a plain compressed DMG straight from the `.app` with `hdiutil`,
+which needs no Finder automation. From the bundle dir:
+
+```bash
+cd src-tauri/target/aarch64-apple-darwin/release/bundle
+hdiutil create -volname "skill-hub" \
+  -srcfolder macos/skill-hub.app -ov -format UDZO \
+  dmg/skill-hub_0.1.0_aarch64.dmg
+```
+
+This produces a working DMG (no styled "drag to Applications" window, but it
+mounts and installs fine). Verify it: `hdiutil attach … -nobrowse` then `file`
+the inner binary for `arm64`, then `hdiutil detach`. Reveal in Finder with
+`open -R <dmg>`.
+
 ## Artifacts
 
 Under `src-tauri/target/aarch64-apple-darwin/release/bundle/`:
