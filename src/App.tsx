@@ -1,4 +1,20 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
+import {
+  Search,
+  RotateCw,
+  Layers,
+  GitCompare,
+  TriangleAlert,
+  Share2,
+  FolderOpen,
+  ExternalLink,
+  SquarePen,
+  Power,
+  PowerOff,
+  ArrowUpFromLine,
+  Link2Off,
+  ArrowLeftRight,
+} from "lucide-react";
 import {
   scanSkills,
   revealInFinder,
@@ -6,8 +22,6 @@ import {
   previewOp,
   applyOp,
   readSkillMd,
-  validateSkillMd,
-  writeSkillMd,
   previewSync,
   applySync,
 } from "./api";
@@ -18,24 +32,23 @@ import {
   type SkillInstance,
   type OpRequest,
   type OpPreview,
-  type SkillFile,
-  type ValidationReport,
   type Tool,
   type SyncRequest,
   type SyncPreview,
 } from "./types";
+import { ToolTag } from "./ui";
+import type { Editing } from "./Editor";
 import "./App.css";
+
+// CodeMirror lives behind this lazy boundary so it stays out of the launch bundle.
+const Editor = lazy(() => import("./Editor"));
+
+type Filter = "all" | "drift" | "broken" | "shared";
 
 interface Pending {
   op: OpRequest;
   preview: OpPreview;
 }
-
-interface Editing {
-  inst: SkillInstance;
-  file: SkillFile;
-}
-
 interface Syncing {
   req: SyncRequest;
   preview: SyncPreview;
@@ -47,7 +60,7 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<string | null>(null);
-  const [filter, setFilter] = useState<"all" | "drift" | "broken" | "shared">("all");
+  const [filter, setFilter] = useState<Filter>("all");
 
   const [pending, setPending] = useState<Pending | null>(null);
   const [busy, setBusy] = useState(false);
@@ -72,11 +85,9 @@ function App() {
     rescan();
   }, []);
 
-  // Action button → fetch preview → open confirm modal.
   async function requestOp(op: OpRequest) {
     try {
-      const preview = await previewOp(op);
-      setPending({ op, preview });
+      setPending({ op, preview: await previewOp(op) });
     } catch (e) {
       setError(String(e));
     }
@@ -84,8 +95,7 @@ function App() {
 
   async function openEditor(inst: SkillInstance) {
     try {
-      const file = await readSkillMd(inst.path);
-      setEditing({ inst, file });
+      setEditing({ inst, file: await readSkillMd(inst.path) });
     } catch (e) {
       setError(String(e));
     }
@@ -100,8 +110,7 @@ function App() {
   async function requestSync(inst: SkillInstance, targetTool: Tool) {
     try {
       const req: SyncRequest = { source: inst.path, target_tool: targetTool };
-      const preview = await previewSync(req);
-      setSyncing({ req, preview });
+      setSyncing({ req, preview: await previewSync(req) });
     } catch (e) {
       setError(String(e));
     }
@@ -137,11 +146,7 @@ function App() {
     try {
       const res = await applyOp(pending.op);
       if (res.ok) {
-        setToast(
-          res.backup_path
-            ? `已完成 · 备份于 ${res.backup_path}`
-            : "已完成",
-        );
+        setToast(res.backup_path ? `已完成 · 备份于 ${res.backup_path}` : "已完成");
         setPending(null);
         await rescan();
       } else {
@@ -190,93 +195,180 @@ function App() {
     [groups, selected],
   );
 
+  // Keyboard nav: arrow keys move selection through the visible list, like a TUI.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (pending || editing || syncing) return;
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA") return;
+      if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+      if (visible.length === 0) return;
+      e.preventDefault();
+      const idx = visible.findIndex((g) => g.name === selected);
+      const next =
+        e.key === "ArrowDown"
+          ? Math.min(visible.length - 1, idx + 1)
+          : Math.max(0, idx < 0 ? 0 : idx - 1);
+      setSelected(visible[next]?.name ?? null);
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [visible, selected, pending, editing, syncing]);
+
   return (
-    <div className="app">
-      <header className="topbar">
-        <div className="brand">
-          <span className="brand-mark">◆</span>
-          <span className="brand-name">Skill Hub</span>
-          <span className="brand-tag">统一管理</span>
+    <div className="flex h-screen flex-col overflow-hidden bg-bg text-ink">
+      {/* ---- command bar ---- */}
+      <header className="flex h-11 flex-shrink-0 items-center gap-3 border-b border-line bg-rail px-3.5">
+        <div className="flex items-center gap-2 pr-1">
+          <span className="text-[15px] leading-none text-accent">◆</span>
+          <span className="text-[13px] font-semibold tracking-tight">skill-hub</span>
         </div>
-        <div className="topbar-actions">
+        <div className="relative ml-auto flex max-w-[440px] flex-1 items-center">
+          <Search
+            size={14}
+            className="pointer-events-none absolute left-2.5 text-faint"
+            strokeWidth={1.75}
+          />
           <input
-            className="search"
+            className="field w-full py-1.5 pl-8 pr-2.5"
             placeholder="搜索 skill / 描述 / 触发词…"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
           />
-          <button className="btn" onClick={rescan} disabled={loading}>
-            {loading ? "扫描中…" : "重新扫描"}
-          </button>
         </div>
+        <button
+          className="icon-btn"
+          onClick={rescan}
+          disabled={loading}
+          title="重新扫描"
+          aria-label="重新扫描"
+        >
+          <RotateCw size={15} strokeWidth={1.75} className={loading ? "animate-spin" : ""} />
+        </button>
       </header>
 
-      <div className="statbar">
-        <Stat label="全部" value={counts.total} active={filter === "all"} onClick={() => setFilter("all")} />
-        <Stat label="内容漂移" value={counts.drift} tone="drift" active={filter === "drift"} onClick={() => setFilter(filter === "drift" ? "all" : "drift")} />
-        <Stat label="损坏" value={counts.broken} tone="broken" active={filter === "broken"} onClick={() => setFilter(filter === "broken" ? "all" : "broken")} />
-        <Stat label="共享/多处" value={counts.shared} tone="shared" active={filter === "shared"} onClick={() => setFilter(filter === "shared" ? "all" : "shared")} />
-      </div>
-
       {error && (
-        <div className="error" onClick={() => setError(null)}>
-          {error}（点击关闭）
+        <div
+          className="flex cursor-pointer items-center gap-2 border-b border-line bg-[color-mix(in_srgb,var(--color-broken)_14%,transparent)] px-4 py-2 text-[12.5px] text-broken"
+          onClick={() => setError(null)}
+        >
+          <TriangleAlert size={14} strokeWidth={1.75} />
+          <span className="flex-1">{error}</span>
+          <span className="text-faint">点击关闭</span>
         </div>
       )}
 
-      <div className="body">
-        <ul className="list">
-          {visible.map((g) => (
-            <li
-              key={g.name}
-              className={`row ${selected === g.name ? "row-active" : ""}`}
-              onClick={() => setSelected(g.name)}
-            >
-              <div className="row-head">
-                <span className="row-name">{g.name}</span>
-                <div className="badges">
-                  {g.drift && <Badge tone="drift">漂移</Badge>}
-                  {g.has_broken && <Badge tone="broken">损坏</Badge>}
-                  {g.instances.some((i) => !i.enabled) && <Badge tone="off">含禁用</Badge>}
-                  {g.shared && <Badge tone="shared">共享 ×{g.instances.length}</Badge>}
+      <div className="flex flex-1 overflow-hidden">
+        {/* ---- scope rail ---- */}
+        <nav className="flex w-[212px] flex-shrink-0 flex-col border-r border-line bg-rail">
+          <div className="px-3 pb-1 pt-3">
+            <span className="eyebrow">视图</span>
+          </div>
+          <div className="flex flex-col gap-0.5 px-2">
+            <RailNav
+              icon={<Layers size={15} strokeWidth={1.75} />}
+              label="全部"
+              count={counts.total}
+              active={filter === "all"}
+              onClick={() => setFilter("all")}
+            />
+            <RailNav
+              icon={<GitCompare size={15} strokeWidth={1.75} />}
+              label="内容漂移"
+              count={counts.drift}
+              tone="drift"
+              active={filter === "drift"}
+              onClick={() => setFilter(filter === "drift" ? "all" : "drift")}
+            />
+            <RailNav
+              icon={<TriangleAlert size={15} strokeWidth={1.75} />}
+              label="损坏"
+              count={counts.broken}
+              tone="broken"
+              active={filter === "broken"}
+              onClick={() => setFilter(filter === "broken" ? "all" : "broken")}
+            />
+            <RailNav
+              icon={<Share2 size={15} strokeWidth={1.75} />}
+              label="共享 / 多处"
+              count={counts.shared}
+              tone="shared"
+              active={filter === "shared"}
+              onClick={() => setFilter(filter === "shared" ? "all" : "shared")}
+            />
+          </div>
+
+          <div className="mt-auto border-t border-line px-3 py-3">
+            <div className="eyebrow mb-1.5">扫描根目录</div>
+            <ul className="flex flex-col gap-1">
+              {(result?.scanned_roots ?? []).map((r) => (
+                <li key={r} className="code truncate text-[10.5px] text-faint" title={r}>
+                  {r}
+                </li>
+              ))}
+            </ul>
+            {result && (
+              <div className="mt-2.5 text-[11px] text-faint">
+                <span className="text-dim">{result.total_instances}</span> 实例 ·{" "}
+                <span className="text-dim">{groups.length}</span> skill
+              </div>
+            )}
+          </div>
+        </nav>
+
+        {/* ---- list ---- */}
+        <ul className="min-w-0 flex-1 overflow-y-auto">
+          {visible.map((g) => {
+            const active = selected === g.name;
+            const desc = firstNonEmpty(g.instances.map((i) => i.description));
+            const hasDisabled = g.instances.some((i) => !i.enabled);
+            return (
+              <li
+                key={g.name}
+                onClick={() => setSelected(g.name)}
+                className={`relative cursor-pointer border-b border-line px-4 py-2.5 transition-colors ${
+                  active ? "bg-surface-2" : "hover:bg-surface"
+                }`}
+              >
+                <span
+                  className={`absolute left-0 top-0 h-full w-[2px] origin-top bg-accent transition-transform duration-150 ${
+                    active ? "scale-y-100" : "scale-y-0"
+                  }`}
+                />
+                <div className="flex items-center gap-2">
+                  <span className="truncate text-[13.5px] font-semibold">{g.name}</span>
+                  <span className="flex-1" />
                   {g.tools.map((t) => (
-                    <Badge key={t} tone={t === "claude" ? "claude" : "codex"}>
-                      {t}
-                    </Badge>
+                    <ToolTag key={t} tool={t} />
                   ))}
+                  <StatusDot drift={g.drift} broken={g.has_broken} />
                 </div>
-              </div>
-              <div className="row-desc">
-                {firstNonEmpty(g.instances.map((i) => i.description)) ?? (
-                  <span className="muted">（无 description）</span>
-                )}
-              </div>
-              <div className="row-scopes">
-                {g.scopes.map((s) => (
-                  <span key={s} className="scope-chip">
-                    {SCOPE_LABELS[s]}
-                  </span>
-                ))}
-              </div>
-            </li>
-          ))}
-          {!loading && visible.length === 0 && <li className="empty">没有匹配的 skill</li>}
+                <div className="mt-1 truncate text-[12px] text-dim">
+                  {desc ?? <span className="text-faint">（无 description）</span>}
+                </div>
+                <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                  {g.scopes.map((s) => (
+                    <span key={s} className="chip">
+                      {SCOPE_LABELS[s]}
+                    </span>
+                  ))}
+                  {g.shared && (
+                    <span className="chip" style={{ color: "var(--color-shared)" }}>
+                      <Share2 size={10} strokeWidth={2} /> ×{g.instances.length}
+                    </span>
+                  )}
+                  {hasDisabled && <span className="chip">含禁用</span>}
+                </div>
+              </li>
+            );
+          })}
+          {!loading && visible.length === 0 && (
+            <li className="px-4 py-16 text-center text-faint">没有匹配的 skill</li>
+          )}
         </ul>
 
-        <Detail
-          group={selectedGroup}
-          onOp={requestOp}
-          onEdit={openEditor}
-          onSync={requestSync}
-        />
+        <Detail group={selectedGroup} onOp={requestOp} onEdit={openEditor} onSync={requestSync} />
       </div>
-
-      {result && (
-        <footer className="footer">
-          {result.total_instances} 个安装实例 · {groups.length} 个唯一 skill · 扫描了{" "}
-          {result.scanned_roots.length} 个根目录
-        </footer>
-      )}
 
       {pending && (
         <ConfirmModal
@@ -286,16 +378,11 @@ function App() {
           onConfirm={confirmOp}
         />
       )}
-
       {editing && (
-        <Editor
-          editing={editing}
-          onClose={() => setEditing(null)}
-          onError={setError}
-          onSaved={onSaved}
-        />
+        <Suspense fallback={<div className="fixed inset-0 z-[55] bg-bg" />}>
+          <Editor editing={editing} onClose={() => setEditing(null)} onError={setError} onSaved={onSaved} />
+        </Suspense>
       )}
-
       {syncing && (
         <SyncModal
           syncing={syncing}
@@ -304,10 +391,65 @@ function App() {
           onConfirm={confirmSync}
         />
       )}
-
       {toast && <Toast message={toast} onDone={() => setToast(null)} />}
     </div>
   );
+}
+
+/* ---- scope rail nav item ---- */
+function RailNav({
+  icon,
+  label,
+  count,
+  tone,
+  active,
+  onClick,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  count: number;
+  tone?: "drift" | "broken" | "shared";
+  active?: boolean;
+  onClick: () => void;
+}) {
+  const toneColor =
+    tone === "drift"
+      ? "var(--color-drift)"
+      : tone === "broken"
+        ? "var(--color-broken)"
+        : tone === "shared"
+          ? "var(--color-shared)"
+          : undefined;
+  return (
+    <button
+      onClick={onClick}
+      className={`group relative flex items-center gap-2.5 rounded-sm px-2.5 py-1.5 text-left transition-colors ${
+        active ? "bg-surface-2 text-ink" : "text-dim hover:bg-surface hover:text-ink"
+      }`}
+    >
+      <span
+        className={`absolute left-0 top-1/2 h-4 w-[2px] -translate-y-1/2 rounded-full bg-accent transition-transform duration-150 ${
+          active ? "scale-y-100" : "scale-y-0"
+        }`}
+      />
+      <span style={{ color: active && toneColor ? toneColor : undefined }} className="flex-shrink-0">
+        {icon}
+      </span>
+      <span className="flex-1 text-[12.5px]">{label}</span>
+      <span
+        className="text-[12px] tabular-nums"
+        style={{ color: count > 0 && toneColor ? toneColor : "var(--color-faint)" }}
+      >
+        {count}
+      </span>
+    </button>
+  );
+}
+
+function StatusDot({ drift, broken }: { drift: boolean; broken: boolean }) {
+  const cls = broken ? "dot dot-broken" : drift ? "dot dot-drift" : "dot dot-ok";
+  const title = broken ? "损坏" : drift ? "内容漂移" : "正常";
+  return <span className={cls} title={title} />;
 }
 
 function Detail({
@@ -323,28 +465,40 @@ function Detail({
 }) {
   if (!group) {
     return (
-      <aside className="detail detail-empty">
-        <p className="muted">选择左侧 skill 查看每个安装实例并管理</p>
+      <aside className="flex w-[404px] flex-shrink-0 items-center justify-center border-l border-line bg-panel p-8">
+        <p className="max-w-[220px] text-center text-[12.5px] leading-relaxed text-faint">
+          选择左侧 skill，查看每个安装实例并管理。
+          <br />
+          <span className="text-[11px]">↑ ↓ 键可在列表中移动</span>
+        </p>
       </aside>
     );
   }
   return (
-    <aside className="detail">
-      <h2 className="detail-title">{group.name}</h2>
+    <aside className="flex w-[404px] flex-shrink-0 flex-col overflow-y-auto border-l border-line bg-panel">
+      <div className="border-b border-line px-4 py-3.5">
+        <h2 className="text-[16px] font-semibold leading-tight">{group.name}</h2>
+        <div className="mt-1 flex items-center gap-2 text-[11.5px] text-dim">
+          <span>{group.instances.length} 个安装</span>
+          <span className="text-faint">·</span>
+          <div className="flex items-center gap-1">
+            {group.tools.map((t) => (
+              <ToolTag key={t} tool={t} />
+            ))}
+          </div>
+        </div>
+      </div>
+
       {group.drift && (
-        <div className="notice notice-drift">
-          各副本正文不一致（body hash 不同）。同步阶段会提供 diff，此处仅提示。
+        <div className="mx-4 mt-4 flex items-start gap-2 rounded-md border border-[color-mix(in_srgb,var(--color-drift)_35%,transparent)] bg-[color-mix(in_srgb,var(--color-drift)_10%,transparent)] px-3 py-2.5 text-[11.5px] leading-relaxed text-drift">
+          <GitCompare size={14} strokeWidth={1.75} className="mt-0.5 flex-shrink-0" />
+          <span>各副本正文不一致（body hash 不同）。同步阶段会提供 diff，此处仅提示。</span>
         </div>
       )}
-      <div className="instances">
+
+      <div className="flex flex-col gap-3 p-4">
         {group.instances.map((inst) => (
-          <InstanceCard
-            key={inst.path}
-            inst={inst}
-            onOp={onOp}
-            onEdit={onEdit}
-            onSync={onSync}
-          />
+          <InstanceCard key={inst.path} inst={inst} onOp={onOp} onEdit={onEdit} onSync={onSync} />
         ))}
       </div>
     </aside>
@@ -364,63 +518,81 @@ function InstanceCard({
 }) {
   const isSymlink = inst.kind === "symlink";
   const inShared = inst.scope === "shared";
-  // System (Codex bundled) installs are read-only.
   const locked = inst.is_system;
+  const spine = inst.tool === "claude" ? "var(--color-claude)" : "var(--color-codex)";
 
   return (
-    <div className={`inst ${!inst.enabled ? "inst-disabled" : ""}`}>
-      <div className="inst-head">
-        <span className={`scope-chip scope-${inst.scope}`}>{SCOPE_LABELS[inst.scope]}</span>
-        <span className="inst-tool">{inst.tool}</span>
-        {isSymlink && <span className="inst-tag">软链</span>}
-        {inst.is_system && <span className="inst-tag">内置</span>}
-        {!inst.enabled && <span className="inst-tag inst-tag-off">已禁用</span>}
-        {inst.broken && <span className="inst-tag inst-tag-bad">损坏</span>}
-        {inst.has_codex_companion && <span className="inst-tag">openai.yaml</span>}
+    <div
+      className={`relative overflow-hidden rounded-md border border-line bg-surface p-3 pl-3.5 ${
+        !inst.enabled ? "opacity-55" : ""
+      }`}
+    >
+      <span className="absolute left-0 top-0 h-full w-[2px]" style={{ background: spine }} />
+
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className="chip" style={{ color: "var(--color-dim)" }}>
+          {SCOPE_LABELS[inst.scope]}
+        </span>
+        <ToolTag tool={inst.tool} />
+        {isSymlink && <span className="chip">软链</span>}
+        {inst.is_system && <span className="chip">内置</span>}
+        {!inst.enabled && <span className="chip">已禁用</span>}
+        {inst.broken && (
+          <span className="chip" style={{ color: "var(--color-broken)", borderColor: "var(--color-broken)" }}>
+            损坏
+          </span>
+        )}
+        {inst.has_codex_companion && <span className="chip">openai.yaml</span>}
       </div>
-      <code className="inst-path">{inst.path}</code>
-      {inst.symlink_target && <div className="inst-link">→ {inst.symlink_target}</div>}
-      {inst.error && <div className="inst-err">⚠ {inst.error}</div>}
+
+      <code className="code mt-2 block leading-relaxed">{inst.path}</code>
+      {inst.symlink_target && (
+        <div className="code mt-1 text-shared">→ {inst.symlink_target}</div>
+      )}
+      {inst.error && (
+        <div className="mt-2 flex items-start gap-1.5 text-[11.5px] leading-relaxed text-broken">
+          <TriangleAlert size={13} strokeWidth={1.75} className="mt-0.5 flex-shrink-0" />
+          <span>{inst.error}</span>
+        </div>
+      )}
+
       {inst.when_to_use && (
-        <div className="inst-field">
-          <span className="inst-label">触发</span>
-          <span>{inst.when_to_use}</span>
+        <div className="mt-2.5 flex gap-2 text-[12px] leading-relaxed">
+          <span className="w-9 flex-shrink-0 text-faint">触发</span>
+          <span className="text-dim">{inst.when_to_use}</span>
         </div>
       )}
       {inst.body_hash && (
-        <div className="inst-field">
-          <span className="inst-label">body</span>
-          <code className="hash">{inst.body_hash.slice(0, 12)}</code>
+        <div className="mt-1.5 flex gap-2 text-[12px]">
+          <span className="w-9 flex-shrink-0 text-faint">body</span>
+          <code className="code">{inst.body_hash.slice(0, 12)}</code>
         </div>
       )}
 
-      <div className="inst-actions">
+      <div className="mt-3 flex flex-wrap gap-1.5">
         <button className="btn btn-sm" onClick={() => revealInFinder(inst.path)}>
-          Finder
+          <FolderOpen size={13} strokeWidth={1.75} /> Finder
         </button>
-        <button
-          className="btn btn-sm"
-          disabled={inst.broken}
-          onClick={() => openPath(inst.skill_md_path)}
-        >
-          打开
+        <button className="btn btn-sm" disabled={inst.broken} onClick={() => openPath(inst.skill_md_path)}>
+          <ExternalLink size={13} strokeWidth={1.75} /> 打开
         </button>
-
-        {!locked && !inst.broken && (
-          <button className="btn btn-sm" onClick={() => onEdit(inst)}>
-            编辑
-          </button>
-        )}
 
         {!locked && !inst.broken && (
           <>
+            <button className="btn btn-sm" onClick={() => onEdit(inst)}>
+              <SquarePen size={13} strokeWidth={1.75} /> 编辑
+            </button>
+
             {inst.enabled ? (
               <button className="btn btn-sm" onClick={() => onOp({ kind: "disable", path: inst.path })}>
-                禁用
+                <PowerOff size={13} strokeWidth={1.75} /> 禁用
               </button>
             ) : (
-              <button className="btn btn-sm btn-go" onClick={() => onOp({ kind: "enable", path: inst.path })}>
-                启用
+              <button
+                className="btn btn-sm btn-go"
+                onClick={() => onOp({ kind: "enable", path: inst.path })}
+              >
+                <Power size={13} strokeWidth={1.75} /> 启用
               </button>
             )}
 
@@ -429,7 +601,7 @@ function InstanceCard({
                 className="btn btn-sm"
                 onClick={() => onOp({ kind: "promote_to_shared", path: inst.path })}
               >
-                提升为共享
+                <ArrowUpFromLine size={13} strokeWidth={1.75} /> 提升为共享
               </button>
             )}
 
@@ -438,148 +610,22 @@ function InstanceCard({
                 className="btn btn-sm btn-danger"
                 onClick={() => onOp({ kind: "remove_link", path: inst.path })}
               >
-                移除链接
+                <Link2Off size={13} strokeWidth={1.75} /> 移除链接
               </button>
             )}
 
-            {inst.tool === "claude" ? (
-              <button className="btn btn-sm" onClick={() => onSync(inst, "codex")}>
-                → 同步到 Codex
-              </button>
-            ) : (
-              <button className="btn btn-sm" onClick={() => onSync(inst, "claude")}>
-                → 同步到 Claude
-              </button>
-            )}
+            <button
+              className="btn btn-sm"
+              onClick={() => onSync(inst, inst.tool === "claude" ? "codex" : "claude")}
+            >
+              <ArrowLeftRight size={13} strokeWidth={1.75} />
+              同步到 {inst.tool === "claude" ? "Codex" : "Claude"}
+            </button>
           </>
         )}
-        {locked && <span className="inst-locked">内置 · 只读</span>}
-      </div>
-    </div>
-  );
-}
-
-function Editor({
-  editing,
-  onClose,
-  onError,
-  onSaved,
-}: {
-  editing: Editing;
-  onClose: () => void;
-  onError: (e: string) => void;
-  onSaved: (backupPath: string | null) => void;
-}) {
-  const { inst, file } = editing;
-  const [content, setContent] = useState(file.content);
-  const [report, setReport] = useState<ValidationReport | null>(null);
-  const [saving, setSaving] = useState(false);
-  const debounce = useRef<number | undefined>(undefined);
-
-  const dirty = content !== file.content;
-
-  // Debounced validation against the instance's tool conventions.
-  useEffect(() => {
-    window.clearTimeout(debounce.current);
-    debounce.current = window.setTimeout(() => {
-      validateSkillMd(content, inst.tool)
-        .then(setReport)
-        .catch((e) => onError(String(e)));
-    }, 220);
-    return () => window.clearTimeout(debounce.current);
-  }, [content, inst.tool, onError]);
-
-  const hasErrors = report ? !report.ok : false;
-  const canSave = file.editable && dirty && !hasErrors && !saving;
-
-  async function save() {
-    setSaving(true);
-    try {
-      const res = await writeSkillMd(file.file_path, content);
-      if (res.ok) onSaved(res.backup_path);
-      else onError(res.error ?? "写入失败");
-    } catch (e) {
-      onError(String(e));
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  function tryClose() {
-    if (dirty && !window.confirm("有未保存的修改，确定放弃？")) return;
-    onClose();
-  }
-
-  return (
-    <div className="editor-overlay">
-      <div className="editor-head">
-        <div className="editor-title">
-          <span className="editor-name">{inst.name}</span>
-          <span className="scope-chip">{SCOPE_LABELS[inst.scope]}</span>
-          <span className="editor-tool">{inst.tool}</span>
-          {!file.enabled && <span className="inst-tag inst-tag-off">已禁用</span>}
-          {!file.editable && (
-            <span className="inst-tag inst-tag-bad">
-              {file.locked_reason ?? "只读"}
-            </span>
-          )}
-        </div>
-        <div className="editor-head-actions">
-          <button className="btn" onClick={tryClose} disabled={saving}>
-            关闭
-          </button>
-          <button className="btn btn-go" onClick={save} disabled={!canSave}>
-            {saving ? "保存中…" : dirty ? "保存" : "无改动"}
-          </button>
-        </div>
-      </div>
-      <code className="editor-path">{file.file_path}</code>
-
-      <div className="editor-body">
-        <textarea
-          className="editor-text"
-          value={content}
-          spellCheck={false}
-          onChange={(e) => setContent(e.target.value)}
-          readOnly={!file.editable}
-        />
-        <div className="editor-side">
-          <div className="editor-side-head">校验</div>
-          {report && (
-            <>
-              <div className="vrow">
-                <span className="vlabel">格式</span>
-                <span className={`vfmt vfmt-${report.detected_format}`}>
-                  {report.detected_format === "claude"
-                    ? "Claude"
-                    : report.detected_format === "codex"
-                      ? "Codex"
-                      : "未识别"}
-                </span>
-              </div>
-              <div className="vrow">
-                <span className="vlabel">name</span>
-                <span>{report.name ?? <span className="muted">—</span>}</span>
-              </div>
-              <div
-                className={`vstatus ${report.ok ? "vstatus-ok" : "vstatus-bad"}`}
-              >
-                {report.ok ? "✓ 可保存" : "✗ 有错误，需修正"}
-              </div>
-              <ul className="issues">
-                {report.issues.length === 0 && (
-                  <li className="muted">没有问题</li>
-                )}
-                {report.issues.map((iss, i) => (
-                  <li key={i} className={`issue issue-${iss.level}`}>
-                    <span className="issue-field">{iss.field}</span>
-                    {iss.message}
-                  </li>
-                ))}
-              </ul>
-            </>
-          )}
-        </div>
+        {locked && (
+          <span className="self-center text-[11px] text-faint">内置 · 只读</span>
+        )}
       </div>
     </div>
   );
@@ -597,87 +643,102 @@ function SyncModal({
   onConfirm: () => void;
 }) {
   const { preview: p } = syncing;
-  const blocked =
-    p.warnings.some((w) => w.includes("拒绝") || w.includes("不支持") || w.includes("同一目录"));
+  const blocked = p.warnings.some(
+    (w) => w.includes("拒绝") || w.includes("不支持") || w.includes("同一目录"),
+  );
   const noChange = p.body_status === "identical";
   const statusLabel =
     p.body_status === "new" ? "新建" : p.body_status === "identical" ? "无变化" : "将覆盖（内容不同）";
+  const statusColor =
+    p.body_status === "new"
+      ? "var(--color-shared)"
+      : p.body_status === "identical"
+        ? "var(--color-faint)"
+        : "var(--color-drift)";
 
   return (
-    <div className="modal-backdrop" onClick={onCancel}>
-      <div className="modal modal-wide" onClick={(e) => e.stopPropagation()}>
-        <h3 className="modal-title">
-          同步 {p.source_tool} → {p.target_tool}
-          <span className={`sync-status sync-${p.body_status}`}>{statusLabel}</span>
-        </h3>
-        <code className="modal-target">{p.target_skill_md}</code>
+    <ModalShell onCancel={onCancel} wide>
+      <h3 className="mb-1 flex items-center gap-2.5 text-[15px] font-semibold">
+        <span>
+          同步 {p.source_tool} <ArrowLeftRight className="inline" size={13} strokeWidth={2} />{" "}
+          {p.target_tool}
+        </span>
+        <span
+          className="rounded-sm px-2 py-0.5 text-[11px] font-medium"
+          style={{ background: "color-mix(in srgb, " + statusColor + " 18%, transparent)", color: statusColor }}
+        >
+          {statusLabel}
+        </span>
+      </h3>
+      <code className="code mb-3 block text-faint">{p.target_skill_md}</code>
 
-        <div className="modal-section">
-          <div className="modal-label">字段映射</div>
-          <table className="fieldmap">
-            <tbody>
-              {p.field_map.map((f, i) => (
-                <tr key={i}>
-                  <td className="fm-field">{f.field}</td>
-                  <td className="fm-from">{f.from}</td>
-                  <td className="fm-arrow">→</td>
-                  <td className="fm-to">{f.to}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-
-        {p.skill_md_diff && !noChange && (
-          <div className="modal-section">
-            <div className="modal-label">SKILL.md diff</div>
-            <pre className="diff">
-              {p.skill_md_diff.split("\n").map((line, i) => {
-                const cls =
-                  line.startsWith("+") ? "diff-add" : line.startsWith("-") ? "diff-del" : "diff-ctx";
-                return (
-                  <div key={i} className={cls}>
-                    {line || " "}
-                  </div>
-                );
-              })}
-            </pre>
-          </div>
-        )}
-
-        {p.openai_yaml && (
-          <div className="modal-section">
-            <div className="modal-label">将生成 agents/openai.yaml</div>
-            <pre className="yaml-gen">{p.openai_yaml}</pre>
-          </div>
-        )}
-
-        {p.warnings.length > 0 && (
-          <div className={blocked ? "modal-warnings" : "modal-backup"}>
-            {p.warnings.map((w, i) => (
-              <div key={i}>{blocked ? "⚠" : "ℹ"} {w}</div>
+      <Section label="字段映射">
+        <table className="w-full border-collapse text-[12px]">
+          <tbody>
+            {p.field_map.map((f, i) => (
+              <tr key={i} className="border-b border-line">
+                <td className="py-1 pr-2 font-medium whitespace-nowrap">{f.field}</td>
+                <td className="code py-1">{f.from}</td>
+                <td className="px-2 text-center text-accent">→</td>
+                <td className="code py-1">{f.to}</td>
+              </tr>
             ))}
-          </div>
-        )}
+          </tbody>
+        </table>
+      </Section>
 
-        {p.target_exists && !blocked && (
-          <div className="modal-backup">🛟 目标已存在，写入前会先备份整个目录</div>
-        )}
+      {p.skill_md_diff && !noChange && (
+        <Section label="SKILL.md diff">
+          <pre className="max-h-[280px] overflow-auto rounded-sm border border-line bg-bg p-2.5 text-[11.5px] leading-[1.55] whitespace-pre-wrap break-all">
+            {p.skill_md_diff.split("\n").map((line, i) => {
+              const color = line.startsWith("+")
+                ? "var(--color-accent)"
+                : line.startsWith("-")
+                  ? "var(--color-broken)"
+                  : "var(--color-dim)";
+              const bg = line.startsWith("+")
+                ? "color-mix(in srgb, var(--color-accent) 11%, transparent)"
+                : line.startsWith("-")
+                  ? "color-mix(in srgb, var(--color-broken) 12%, transparent)"
+                  : "transparent";
+              return (
+                <div key={i} style={{ color, background: bg }}>
+                  {line || " "}
+                </div>
+              );
+            })}
+          </pre>
+        </Section>
+      )}
 
-        <div className="modal-actions">
-          <button className="btn" onClick={onCancel} disabled={busy}>
-            取消
-          </button>
-          <button
-            className="btn btn-go"
-            onClick={onConfirm}
-            disabled={busy || blocked || noChange}
-          >
-            {busy ? "同步中…" : "确认同步"}
-          </button>
-        </div>
-      </div>
-    </div>
+      {p.openai_yaml && (
+        <Section label="将生成 agents/openai.yaml">
+          <pre className="rounded-sm border border-line bg-bg p-2.5 text-[11.5px] leading-[1.55] whitespace-pre-wrap text-codex">
+            {p.openai_yaml}
+          </pre>
+        </Section>
+      )}
+
+      {p.warnings.length > 0 && (
+        <Callout tone={blocked ? "broken" : "shared"}>
+          {p.warnings.map((w, i) => (
+            <div key={i}>{w}</div>
+          ))}
+        </Callout>
+      )}
+      {p.target_exists && !blocked && (
+        <Callout tone="shared">目标已存在，写入前会先备份整个目录。</Callout>
+      )}
+
+      <ModalActions>
+        <button className="btn" onClick={onCancel} disabled={busy}>
+          取消
+        </button>
+        <button className="btn btn-go" onClick={onConfirm} disabled={busy || blocked || noChange}>
+          {busy ? "同步中…" : "确认同步"}
+        </button>
+      </ModalActions>
+    </ModalShell>
   );
 }
 
@@ -694,38 +755,87 @@ function ConfirmModal({
 }) {
   const blocked = pending.preview.warnings.length > 0;
   return (
-    <div className="modal-backdrop" onClick={onCancel}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <h3 className="modal-title">{pending.preview.summary}</h3>
-        <div className="modal-section">
-          <div className="modal-label">将执行</div>
-          <ol className="modal-steps">
-            {pending.preview.steps.map((s, i) => (
-              <li key={i}>{s}</li>
-            ))}
-          </ol>
-        </div>
-        {pending.preview.backup_note && (
-          <div className="modal-backup">🛟 {pending.preview.backup_note}</div>
-        )}
-        {blocked && (
-          <div className="modal-warnings">
-            {pending.preview.warnings.map((w, i) => (
-              <div key={i}>⚠ {w}</div>
-            ))}
-          </div>
-        )}
-        <div className="modal-actions">
-          <button className="btn" onClick={onCancel} disabled={busy}>
-            取消
-          </button>
-          <button className="btn btn-go" onClick={onConfirm} disabled={busy || blocked}>
-            {busy ? "执行中…" : "确认执行"}
-          </button>
-        </div>
+    <ModalShell onCancel={onCancel}>
+      <h3 className="mb-3.5 text-[15px] font-semibold">{pending.preview.summary}</h3>
+      <Section label="将执行">
+        <ol className="flex list-decimal flex-col gap-1 pl-4 text-[12.5px] leading-relaxed marker:text-faint">
+          {pending.preview.steps.map((s, i) => (
+            <li key={i} className="break-all">
+              {s}
+            </li>
+          ))}
+        </ol>
+      </Section>
+      {pending.preview.backup_note && <Callout tone="shared">{pending.preview.backup_note}</Callout>}
+      {blocked && (
+        <Callout tone="broken">
+          {pending.preview.warnings.map((w, i) => (
+            <div key={i}>{w}</div>
+          ))}
+        </Callout>
+      )}
+      <ModalActions>
+        <button className="btn" onClick={onCancel} disabled={busy}>
+          取消
+        </button>
+        <button className="btn btn-go" onClick={onConfirm} disabled={busy || blocked}>
+          {busy ? "执行中…" : "确认执行"}
+        </button>
+      </ModalActions>
+    </ModalShell>
+  );
+}
+
+/* ---- shared modal primitives ---- */
+function ModalShell({
+  children,
+  onCancel,
+  wide,
+}: {
+  children: React.ReactNode;
+  onCancel: () => void;
+  wide?: boolean;
+}) {
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-5 backdrop-blur-[2px]"
+      onClick={onCancel}
+    >
+      <div
+        className={`max-h-[86vh] w-full overflow-y-auto rounded-md border border-line-2 bg-panel p-5 shadow-[0_24px_64px_rgba(0,0,0,0.55)] ${
+          wide ? "max-w-[620px]" : "max-w-[460px]"
+        }`}
+        onClick={(e) => e.stopPropagation()}
+      >
+        {children}
       </div>
     </div>
   );
+}
+
+function Section({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="mb-3.5">
+      <div className="eyebrow mb-1.5">{label}</div>
+      {children}
+    </div>
+  );
+}
+
+function Callout({ tone, children }: { tone: "shared" | "broken"; children: React.ReactNode }) {
+  const color = tone === "broken" ? "var(--color-broken)" : "var(--color-shared)";
+  return (
+    <div
+      className="mb-3.5 flex flex-col gap-0.5 rounded-sm px-3 py-2.5 text-[12px] leading-relaxed break-all"
+      style={{ background: `color-mix(in srgb, ${color} 12%, transparent)`, color }}
+    >
+      {children}
+    </div>
+  );
+}
+
+function ModalActions({ children }: { children: React.ReactNode }) {
+  return <div className="flex justify-end gap-2 pt-1">{children}</div>;
 }
 
 function Toast({ message, onDone }: { message: string; onDone: () => void }) {
@@ -733,32 +843,14 @@ function Toast({ message, onDone }: { message: string; onDone: () => void }) {
     const t = setTimeout(onDone, 3500);
     return () => clearTimeout(t);
   }, [message, onDone]);
-  return <div className="toast">{message}</div>;
-}
-
-function Stat({
-  label,
-  value,
-  tone,
-  active,
-  onClick,
-}: {
-  label: string;
-  value: number;
-  tone?: string;
-  active?: boolean;
-  onClick?: () => void;
-}) {
   return (
-    <button className={`stat ${active ? "stat-active" : ""} ${tone ? `stat-${tone}` : ""}`} onClick={onClick}>
-      <span className="stat-value">{value}</span>
-      <span className="stat-label">{label}</span>
-    </button>
+    <div
+      className="fixed bottom-9 left-1/2 z-[60] max-w-[80vw] -translate-x-1/2 rounded-md border border-line-2 bg-panel px-4 py-2.5 text-[12.5px] break-all shadow-[0_16px_40px_rgba(0,0,0,0.5)]"
+      style={{ animation: "toast-in 180ms ease-out" }}
+    >
+      {message}
+    </div>
   );
-}
-
-function Badge({ tone, children }: { tone: string; children: React.ReactNode }) {
-  return <span className={`badge badge-${tone}`}>{children}</span>;
 }
 
 function firstNonEmpty(arr: (string | null)[]): string | null {
