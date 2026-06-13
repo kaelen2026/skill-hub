@@ -70,7 +70,7 @@ export default function Editor({
   }
 
   return (
-    <div className="fixed inset-0 z-[55] flex flex-col bg-bg">
+    <div className="fixed inset-0 z-55 flex flex-col bg-bg">
       <div className="flex flex-shrink-0 items-center gap-3 border-b border-line bg-rail px-4 py-2.5">
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-[15px] font-semibold">{inst.name}</span>
