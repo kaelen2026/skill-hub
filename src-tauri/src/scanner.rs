@@ -84,14 +84,34 @@ fn home() -> PathBuf {
 fn build_roots(extra_roots: &[String]) -> Vec<Root> {
     let h = home();
     let mut roots = vec![
-        Root { dir: h.join(".claude/skills"), scope: "claude-user", tool: "claude" },
-        Root { dir: h.join(".agents/skills"), scope: "shared", tool: "claude" },
-        Root { dir: h.join(".codex/skills"), scope: "codex-user", tool: "codex" },
+        Root {
+            dir: h.join(".claude/skills"),
+            scope: "claude-user",
+            tool: "claude",
+        },
+        Root {
+            dir: h.join(".agents/skills"),
+            scope: "shared",
+            tool: "claude",
+        },
+        Root {
+            dir: h.join(".codex/skills"),
+            scope: "codex-user",
+            tool: "codex",
+        },
     ];
     for r in extra_roots {
         let base = PathBuf::from(r);
-        roots.push(Root { dir: base.join(".claude/skills"), scope: "project", tool: "claude" });
-        roots.push(Root { dir: base.join(".codex/skills"), scope: "project", tool: "codex" });
+        roots.push(Root {
+            dir: base.join(".claude/skills"),
+            scope: "project",
+            tool: "claude",
+        });
+        roots.push(Root {
+            dir: base.join(".codex/skills"),
+            scope: "project",
+            tool: "codex",
+        });
     }
     roots
 }
@@ -157,11 +177,17 @@ fn collect_from_dir(
         let skill_md_present = skill_md.is_file();
         let disabled_present = disabled_md.is_file();
         // The file we actually read metadata from (prefer the active one).
-        let source_md = if skill_md_present { &skill_md } else { &disabled_md };
+        let source_md = if skill_md_present {
+            &skill_md
+        } else {
+            &disabled_md
+        };
 
         // Treat as a skill if an active OR disabled SKILL.md exists, OR it's a
         // dangling symlink we still want to surface as "broken".
-        if !skill_md_present && !disabled_present && !(is_symlink && !target_exists) {
+        let dangling_symlink = is_symlink && !target_exists;
+        let is_skill_candidate = skill_md_present || disabled_present || dangling_symlink;
+        if !is_skill_candidate {
             continue;
         }
 
@@ -170,7 +196,11 @@ fn collect_from_dir(
                 .ok()
                 .map(|p| {
                     // Resolve relative symlink targets against the link's parent.
-                    if p.is_absolute() { p } else { dir.join(p) }
+                    if p.is_absolute() {
+                        p
+                    } else {
+                        dir.join(p)
+                    }
                 })
                 .and_then(|p| fs::canonicalize(&p).ok().or(Some(p)))
                 .map(|p| p.to_string_lossy().to_string());
@@ -253,11 +283,10 @@ fn parse_skill_md(path: &Path) -> Result<ParsedSkill, String> {
             // Short description lives in different places per tool:
             //   Claude: top-level `dispatch_intent`
             //   Codex:  metadata.short-description
-            short_description = str_field(&val, "dispatch_intent")
-                .or_else(|| {
-                    val.get("metadata")
-                        .and_then(|m| str_field(m, "short-description"))
-                });
+            short_description = str_field(&val, "dispatch_intent").or_else(|| {
+                val.get("metadata")
+                    .and_then(|m| str_field(m, "short-description"))
+            });
         }
     }
 
@@ -265,7 +294,13 @@ fn parse_skill_md(path: &Path) -> Result<ParsedSkill, String> {
     hasher.update(body.trim().as_bytes());
     let body_hash = format!("{:x}", hasher.finalize());
 
-    Ok(ParsedSkill { name, description, when_to_use, short_description, body_hash })
+    Ok(ParsedSkill {
+        name,
+        description,
+        when_to_use,
+        short_description,
+        body_hash,
+    })
 }
 
 fn str_field(val: &serde_yaml::Value, key: &str) -> Option<String> {
@@ -279,7 +314,10 @@ fn str_field(val: &serde_yaml::Value, key: &str) -> Option<String> {
 /// body is the whole file.
 fn split_frontmatter(raw: &str) -> (Option<&str>, &str) {
     let trimmed = raw.strip_prefix('\u{feff}').unwrap_or(raw); // tolerate BOM
-    if let Some(rest) = trimmed.strip_prefix("---\n").or_else(|| trimmed.strip_prefix("---\r\n")) {
+    if let Some(rest) = trimmed
+        .strip_prefix("---\n")
+        .or_else(|| trimmed.strip_prefix("---\r\n"))
+    {
         // Find the closing delimiter at the start of a line.
         if let Some(end) = find_closing_delim(rest) {
             let fm = &rest[..end.0];
@@ -333,16 +371,34 @@ fn aggregate(instances: Vec<SkillInstance>) -> Vec<SkillGroup> {
             hashes.dedup();
             let drift = hashes.len() > 1;
 
-            SkillGroup { name, instances, tools, scopes, shared, drift, has_broken }
+            SkillGroup {
+                name,
+                instances,
+                tools,
+                scopes,
+                shared,
+                drift,
+                has_broken,
+            }
         })
         .collect();
 
     // Surface the interesting ones first: drift, broken, then shared, then name.
     groups.sort_by(|a, b| {
         let rank = |g: &SkillGroup| -> u8 {
-            if g.drift { 0 } else if g.has_broken { 1 } else if g.shared { 2 } else { 3 }
+            if g.drift {
+                0
+            } else if g.has_broken {
+                1
+            } else if g.shared {
+                2
+            } else {
+                3
+            }
         };
-        rank(a).cmp(&rank(b)).then(a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+        rank(a)
+            .cmp(&rank(b))
+            .then(a.name.to_lowercase().cmp(&b.name.to_lowercase()))
     });
     groups
 }
@@ -360,7 +416,11 @@ mod tests {
         for root in &r.scanned_roots {
             println!("  {root}");
         }
-        println!("\n{} instances, {} unique skills:", r.total_instances, r.groups.len());
+        println!(
+            "\n{} instances, {} unique skills:",
+            r.total_instances,
+            r.groups.len()
+        );
         for g in &r.groups {
             let flags = [
                 if g.drift { "DRIFT" } else { "" },
@@ -406,10 +466,13 @@ mod tests {
 
     #[test]
     fn codex_metadata_short_description() {
-        let sample = "---\nname: c\ndescription: d\nmetadata:\n  short-description: sd\n---\nbody\n";
+        let sample =
+            "---\nname: c\ndescription: d\nmetadata:\n  short-description: sd\n---\nbody\n";
         let (fm, _) = split_frontmatter(sample);
         let val: serde_yaml::Value = serde_yaml::from_str(fm.unwrap()).unwrap();
-        let sd = val.get("metadata").and_then(|m| str_field(m, "short-description"));
+        let sd = val
+            .get("metadata")
+            .and_then(|m| str_field(m, "short-description"));
         assert_eq!(sd.as_deref(), Some("sd"));
     }
 

@@ -143,7 +143,7 @@ fn preview_link(source: &str, scope: &str) -> OpPreview {
     let target_dir = match scope_dir(scope) {
         Some(d) => d,
         None => {
-            warnings.push(format!("不支持的目标 scope：{scope}").into());
+            warnings.push(format!("不支持的目标 scope：{scope}"));
             return OpPreview {
                 summary: "建立软链".into(),
                 steps: vec![],
@@ -175,7 +175,10 @@ fn preview_remove_link(path: &str) -> OpPreview {
     }
     OpPreview {
         summary: format!("移除软链 {}", display_name(p)),
-        steps: vec![format!("删除软链 {}（不影响其指向的真实目录）", p.display())],
+        steps: vec![format!(
+            "删除软链 {}（不影响其指向的真实目录）",
+            p.display()
+        )],
         backup_note: "仅删除链接本身，记录其指向以便恢复".into(),
         warnings,
     }
@@ -222,9 +225,16 @@ fn apply_toggle(path: &str, disable: bool) -> io::Result<(Option<PathBuf>, Vec<S
     let backup = backup_dir(dir)?;
     let active = dir.join("SKILL.md");
     let disabled = dir.join("SKILL.md.disabled");
-    let (from, to) = if disable { (active, disabled) } else { (disabled, active) };
+    let (from, to) = if disable {
+        (active, disabled)
+    } else {
+        (disabled, active)
+    };
     fs::rename(&from, &to)?;
-    Ok((Some(backup), vec![format!("renamed {} → {}", from.display(), to.display())]))
+    Ok((
+        Some(backup),
+        vec![format!("renamed {} → {}", from.display(), to.display())],
+    ))
 }
 
 fn apply_promote(path: &str) -> io::Result<(Option<PathBuf>, Vec<String>)> {
@@ -250,7 +260,10 @@ fn apply_link(source: &str, scope: &str) -> io::Result<(Option<PathBuf>, Vec<Str
     fs::create_dir_all(&target_dir)?;
     let dest = target_dir.join(base(src));
     symlink(src, &dest)?;
-    Ok((None, vec![format!("symlinked {} → {}", dest.display(), src.display())]))
+    Ok((
+        None,
+        vec![format!("symlinked {} → {}", dest.display(), src.display())],
+    ))
 }
 
 fn apply_remove_link(path: &str) -> io::Result<(Option<PathBuf>, Vec<String>)> {
@@ -267,7 +280,10 @@ fn apply_remove_link(path: &str) -> io::Result<(Option<PathBuf>, Vec<String>)> {
 // ---- helpers ----------------------------------------------------------------
 
 fn base(p: &Path) -> String {
-    p.file_name().unwrap_or_default().to_string_lossy().to_string()
+    p.file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string()
 }
 
 fn display_name(p: &Path) -> String {
@@ -350,12 +366,16 @@ mod tests {
         let root = tmpdir("toggle");
         let dir = make_skill(&root, "demo", "hello");
 
-        let r = apply(&OpRequest::Disable { path: dir.to_string_lossy().into() });
+        let r = apply(&OpRequest::Disable {
+            path: dir.to_string_lossy().into(),
+        });
         assert!(r.ok, "{:?}", r.error);
         assert!(!dir.join("SKILL.md").exists());
         assert!(dir.join("SKILL.md.disabled").exists());
 
-        let r = apply(&OpRequest::Enable { path: dir.to_string_lossy().into() });
+        let r = apply(&OpRequest::Enable {
+            path: dir.to_string_lossy().into(),
+        });
         assert!(r.ok, "{:?}", r.error);
         assert!(dir.join("SKILL.md").exists());
         assert!(!dir.join("SKILL.md.disabled").exists());
@@ -375,7 +395,9 @@ mod tests {
         assert!(is_symlink(&dest));
 
         // remove_link refuses non-symlinks, accepts symlinks.
-        let r = apply(&OpRequest::RemoveLink { path: dest.to_string_lossy().into() });
+        let r = apply(&OpRequest::RemoveLink {
+            path: dest.to_string_lossy().into(),
+        });
         assert!(r.ok, "{:?}", r.error);
         assert!(!dest.exists());
         // Source must be untouched.
@@ -388,7 +410,9 @@ mod tests {
     fn remove_link_refuses_real_dir() {
         let root = tmpdir("guard");
         let dir = make_skill(&root, "real", "x");
-        let r = apply(&OpRequest::RemoveLink { path: dir.to_string_lossy().into() });
+        let r = apply(&OpRequest::RemoveLink {
+            path: dir.to_string_lossy().into(),
+        });
         assert!(!r.ok, "must refuse deleting a real directory");
         assert!(dir.join("SKILL.md").exists());
         fs::remove_dir_all(&root).ok();
@@ -407,7 +431,10 @@ mod tests {
         move_dir(&src, &dst).unwrap();
         assert!(!src.exists(), "source removed after move");
         assert!(dst.join("SKILL.md").exists());
-        assert_eq!(fs::read_to_string(dst.join("nested/extra.txt")).unwrap(), "keep me");
+        assert_eq!(
+            fs::read_to_string(dst.join("nested/extra.txt")).unwrap(),
+            "keep me"
+        );
 
         fs::remove_dir_all(&root).ok();
     }
@@ -420,7 +447,9 @@ mod tests {
         let src = make_skill(&root, "p", "x");
         let link = root.join("p-link");
         symlink(&src, &link).unwrap();
-        let pv = preview(&OpRequest::PromoteToShared { path: link.to_string_lossy().into() });
+        let pv = preview(&OpRequest::PromoteToShared {
+            path: link.to_string_lossy().into(),
+        });
         assert!(!pv.warnings.is_empty(), "promoting a symlink should warn");
         fs::remove_dir_all(&root).ok();
     }

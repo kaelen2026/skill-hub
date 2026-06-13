@@ -12,9 +12,18 @@ across Claude Code and Codex. A "skill" is any directory containing a `SKILL.md`
 PATH="$HOME/.rustup/toolchains/stable-aarch64-apple-darwin/bin:$PATH" <cmd>
 ```
 
-- Backend tests (the real verification surface): `cd src-tauri && cargo test`
-- Frontend typecheck/build: `npm run build` (runs `tsc` then `vite build`)
+- **Quality gate (the single entrypoint): `npm run verify`** → runs `scripts/quality-gate.sh`:
+  `cargo fmt --check` + `cargo clippy --all-targets -D warnings` + `cargo test` + frontend `tsc`/`vite build`.
+- Backend tests alone: `cd src-tauri && cargo test`
+- Frontend typecheck/build alone: `npm run build` (runs `tsc` then `vite build`)
 - Run the app: `npm run tauri dev` (GUI; needs the `PATH` prefix above)
+
+The gate is enforced two ways, both calling `scripts/quality-gate.sh` (single source of truth):
+- **pre-commit**: husky hook at `.husky/pre-commit` — every commit must pass the full gate.
+- **CI**: `.github/workflows/ci.yml` on push/PR (macos runner, matches dev env).
+
+Rust must stay `cargo fmt`-clean and `clippy -D warnings`-clean — the gate rejects any format
+drift or clippy warning, not just test failures. Run `cargo fmt` before committing.
 
 ## Scope layout (where skills live)
 

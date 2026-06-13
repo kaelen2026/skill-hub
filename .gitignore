@@ -22,3 +22,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# agent runtime settings (may hold MCP tokens)
+.claude/settings.local.json

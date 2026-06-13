@@ -101,16 +101,24 @@ fn load_source(dir: &Path) -> Result<Source, String> {
     let name = str_field(&val, "name")
         .or_else(|| dir.file_name().map(|s| s.to_string_lossy().to_string()))
         .ok_or("源缺少 name")?;
-    let when_to_use = str_field(&val, "when_to_use")
-        .or_else(|| val.get("metadata").and_then(|m| str_field(m, "when_to_use")));
-    let short_desc = str_field(&val, "dispatch_intent")
-        .or_else(|| val.get("metadata").and_then(|m| str_field(m, "short-description")));
+    let when_to_use = str_field(&val, "when_to_use").or_else(|| {
+        val.get("metadata")
+            .and_then(|m| str_field(m, "when_to_use"))
+    });
+    let short_desc = str_field(&val, "dispatch_intent").or_else(|| {
+        val.get("metadata")
+            .and_then(|m| str_field(m, "short-description"))
+    });
     // Detect which tool's conventions the source follows.
     let tool = if str_field(&val, "when_to_use").is_some()
         || str_field(&val, "dispatch_intent").is_some()
     {
         "claude"
-    } else if val.get("metadata").and_then(|m| str_field(m, "short-description")).is_some() {
+    } else if val
+        .get("metadata")
+        .and_then(|m| str_field(m, "short-description"))
+        .is_some()
+    {
         "codex"
     } else {
         "claude" // default assumption
@@ -208,7 +216,10 @@ pub fn preview(req: &SyncRequest) -> SyncPreview {
     let target_skill_md = target_dir.join("SKILL.md");
     let target_disabled = target_dir.join("SKILL.md.disabled");
 
-    if target_dir.to_string_lossy().contains("/.codex/skills/.system/") {
+    if target_dir
+        .to_string_lossy()
+        .contains("/.codex/skills/.system/")
+    {
         return blocked(&req.target_tool, vec!["拒绝写入 Codex 内置技能目录".into()]);
     }
     if target_dir == src_dir {
@@ -254,7 +265,9 @@ pub fn preview(req: &SyncRequest) -> SyncPreview {
     }
 
     SyncPreview {
-        ok: warnings.iter().all(|w| !w.contains("拒绝") && !w.contains("不支持")),
+        ok: warnings
+            .iter()
+            .all(|w| !w.contains("拒绝") && !w.contains("不支持")),
         source_tool: src.tool,
         target_tool: req.target_tool.clone(),
         target_dir: target_dir.to_string_lossy().to_string(),
@@ -272,7 +285,11 @@ pub fn apply(req: &SyncRequest) -> SyncResult {
     let pv = preview(req);
     // Hard blockers contain these markers; soft warnings (same tool, identical)
     // do not block — the user already saw them in the preview.
-    if pv.warnings.iter().any(|w| w.contains("拒绝") || w.contains("不支持") || w.contains("同一目录")) {
+    if pv
+        .warnings
+        .iter()
+        .any(|w| w.contains("拒绝") || w.contains("不支持") || w.contains("同一目录"))
+    {
         return SyncResult {
             ok: false,
             backup_path: None,
@@ -307,7 +324,11 @@ pub fn apply(req: &SyncRequest) -> SyncResult {
     // disabled file, keep it disabled).
     let active = target_dir.join("SKILL.md");
     let disabled = target_dir.join("SKILL.md.disabled");
-    let dest = if !active.exists() && disabled.exists() { disabled } else { active };
+    let dest = if !active.exists() && disabled.exists() {
+        disabled
+    } else {
+        active
+    };
     let projected = project_skill_md(&src, &req.target_tool);
     if let Err(e) = fs::write(&dest, &projected) {
         return err_result(format!("写入 SKILL.md 失败：{e}"));
@@ -327,7 +348,12 @@ pub fn apply(req: &SyncRequest) -> SyncResult {
         written.push(yaml_path.to_string_lossy().to_string());
     }
 
-    SyncResult { ok: true, backup_path: backup, written, error: None }
+    SyncResult {
+        ok: true,
+        backup_path: backup,
+        written,
+        error: None,
+    }
 }
 
 fn build_field_map(src: &Source, target_tool: &str) -> Vec<FieldMap> {
@@ -352,8 +378,12 @@ fn build_field_map(src: &Source, target_tool: &str) -> Vec<FieldMap> {
     if let Some(s) = &src.short_desc {
         m.push(FieldMap {
             field: "短描述".into(),
-            from: if src.tool == "claude" { "dispatch_intent" } else { "metadata.short-description" }
-                .into(),
+            from: if src.tool == "claude" {
+                "dispatch_intent"
+            } else {
+                "metadata.short-description"
+            }
+            .into(),
             to: if target_tool == "codex" {
                 "metadata.short-description + interface.short_description".into()
             } else {
@@ -396,7 +426,12 @@ fn blocked(target_tool: &str, warnings: Vec<String>) -> SyncPreview {
 }
 
 fn err_result(e: impl Into<String>) -> SyncResult {
-    SyncResult { ok: false, backup_path: None, written: vec![], error: Some(e.into()) }
+    SyncResult {
+        ok: false,
+        backup_path: None,
+        written: vec![],
+        error: Some(e.into()),
+    }
 }
 
 fn normalize(s: &str) -> String {
@@ -424,7 +459,10 @@ fn unified_diff(old: &str, new: &str) -> String {
 
 /// Quote a scalar for YAML using a double-quoted string (always safe).
 fn yaml_value(s: &str) -> String {
-    let escaped = s.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n");
+    let escaped = s
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n");
     format!("\"{escaped}\"")
 }
 
@@ -488,7 +526,10 @@ mod tests {
         assert!(md.contains("name: my-skill"));
         assert!(md.contains("metadata:"));
         assert!(md.contains("short-description: \"Do the thing\""));
-        assert!(md.contains("when_to_use: \"when X happens\""), "triggers must be preserved");
+        assert!(
+            md.contains("when_to_use: \"when X happens\""),
+            "triggers must be preserved"
+        );
         assert!(md.contains("# Heading"));
         // Must NOT carry Claude's top-level keys.
         assert!(!md.contains("\ndispatch_intent:"));
@@ -574,13 +615,19 @@ mod tests {
             target_tool: "codex".into(),
         };
         let p = preview(&req);
-        println!("\nsource_tool={} target_exists={} body_status={}", p.source_tool, p.target_exists, p.body_status);
+        println!(
+            "\nsource_tool={} target_exists={} body_status={}",
+            p.source_tool, p.target_exists, p.body_status
+        );
         println!("field_map: {} entries", p.field_map.len());
         if let Some(y) = &p.openai_yaml {
             println!("--- generated openai.yaml ---\n{y}");
         }
         assert_eq!(p.source_tool, "claude");
-        assert!(p.openai_yaml.is_some(), "codex target must produce openai.yaml");
+        assert!(
+            p.openai_yaml.is_some(),
+            "codex target must produce openai.yaml"
+        );
         assert!(p.field_map.iter().any(|f| f.field == "name"));
         // `write` has a when_to_use, so it must be preserved into metadata.
         assert!(p.field_map.iter().any(|f| f.field == "触发词"));

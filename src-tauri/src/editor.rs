@@ -282,7 +282,8 @@ mod tests {
 
     #[test]
     fn valid_claude_skill_passes() {
-        let c = "---\nname: my-skill\ndescription: does a thing\nwhen_to_use: when X\n---\n# Body\n";
+        let c =
+            "---\nname: my-skill\ndescription: does a thing\nwhen_to_use: when X\n---\n# Body\n";
         let r = validate(c, "claude");
         assert!(r.ok, "{:?}", r.issues);
         assert_eq!(r.detected_format, "claude");
@@ -294,7 +295,10 @@ mod tests {
         let c = "---\ndescription: d\n---\nbody\n";
         let r = validate(c, "claude");
         assert!(!r.ok);
-        assert!(r.issues.iter().any(|i| i.field == "name" && i.level == "error"));
+        assert!(r
+            .issues
+            .iter()
+            .any(|i| i.field == "name" && i.level == "error"));
     }
 
     #[test]
