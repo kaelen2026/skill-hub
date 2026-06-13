@@ -4,7 +4,7 @@
    Skill Hub — terminal-grade console
    Near-black canvas, hairline structural grid, monospace data/identifiers,
    a single electric-green signal color used only for active / live / primary.
-   Dark-only by design: a terminal has a point of view about light.
+   Dark by default; a light theme re-points the tokens (see [data-theme="light"]).
    ========================================================================= */
 
 @theme {
@@ -46,6 +46,46 @@
   --radius-md: 8px;
 
   --animate-pulse-dot: pulse-dot 2.4s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+/* The @theme values above are the dark default. Light mode re-points the
+   surface/text/line/status tokens; the font, radius, and animation tokens are
+   theme-agnostic and stay as defined. Utilities read these via var(), so a
+   runtime [data-theme] swap on <html> cascades everywhere. */
+:root {
+  color-scheme: dark;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  /* surfaces — near-white, deepened in hairline steps */
+  --color-bg: #fbfcfd;
+  --color-rail: #f3f5f8;
+  --color-panel: #f7f9fb;
+  --color-surface: #eef1f5;
+  --color-surface-2: #e5e9ef;
+  --color-surface-3: #dbe1e9;
+
+  /* structural grid */
+  --color-line: #dde2e9;
+  --color-line-2: #c7cdd7;
+
+  /* text */
+  --color-ink: #1a1d23;
+  --color-dim: #586170;
+  --color-faint: #98a1ad;
+
+  /* signal — green darkened so it carries contrast on white */
+  --color-accent: #16a34a;
+  --color-accent-press: #15803d;
+
+  /* functional status — saturated up to sit on near-white */
+  --color-drift: #b27708; /* amber */
+  --color-broken: #dc2626; /* red */
+  --color-shared: #0d9488; /* cyan */
+  --color-claude: #bf6130; /* terracotta */
+  --color-codex: #3b62b5; /* steel blue */
 }
 
 @keyframes pulse-dot {

@@ -22,6 +22,8 @@ import {
   X,
   Trash2,
   Check,
+  Sun,
+  Moon,
 } from "lucide-react";
 import {
   scanSkills,
@@ -183,6 +185,11 @@ function App() {
     return v >= 25 && v <= 75 ? v : 50;
   });
   const splitRef = useRef<HTMLDivElement>(null);
+  const [theme, setTheme] = useState<"dark" | "light">(() => {
+    const saved = localStorage.getItem("theme");
+    if (saved === "light" || saved === "dark") return saved;
+    return window.matchMedia?.("(prefers-color-scheme: light)").matches ? "light" : "dark";
+  });
   const [groupConfig, setGroupConfig] = useState<GroupConfig>({
     version: 1,
     categories: [],
@@ -224,6 +231,11 @@ function App() {
   useEffect(() => {
     localStorage.setItem("list-pct", String(Math.round(listPct)));
   }, [listPct]);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    localStorage.setItem("theme", theme);
+  }, [theme]);
 
   // Drag the divider between the list and detail panes to rebalance them.
   function startSplitDrag(e: React.MouseEvent) {
@@ -451,6 +463,18 @@ function App() {
             onChange={(e) => setQuery(e.target.value)}
           />
         </div>
+        <button
+          className="icon-btn"
+          onClick={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
+          title={theme === "dark" ? "切换到亮色" : "切换到暗色"}
+          aria-label={theme === "dark" ? "切换到亮色" : "切换到暗色"}
+        >
+          {theme === "dark" ? (
+            <Sun size={15} strokeWidth={1.75} />
+          ) : (
+            <Moon size={15} strokeWidth={1.75} />
+          )}
+        </button>
         <button
           className="icon-btn"
           onClick={rescan}
